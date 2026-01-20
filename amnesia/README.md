@@ -108,7 +108,3 @@ amnesia/
 
 - **Required**: SQLite3 (pre-installed on macOS/Linux)
 - **Required**: [uv](https://github.com/astral-sh/uv) (manages Python dependencies automatically)
-
-## License
-
-MIT
