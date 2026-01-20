@@ -1,6 +1,5 @@
 ---
 description: Summarize this conversation and save to memory
-model: anthropic/claude-4-5-haiku-20250110
 ---
 
 You are tasked with summarizing the current conversation and saving it as a memory for future reference.
