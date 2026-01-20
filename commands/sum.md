@@ -55,25 +55,49 @@ ASSISTANT: [second assistant response]
 [Relevant keywords for semantic search, e.g.: python, docker, authentication, bug-fix, refactoring]
 ```
 
-4. **Save the summary** by running the following command with the summary content.
+4. **Save the summary** using the improved method with temporary files to handle multi-line content reliably.
 
-**CRITICAL**: You MUST use the exact command below. The session ID is automatically captured via command substitution to ensure updates overwrite the previous summary instead of creating duplicates.
+**CRITICAL**: Use temporary files to avoid shell quoting issues with large multi-line content. The session ID is automatically captured to ensure updates overwrite the previous summary.
 
 ```bash
-SESSION_ID=$(opencode session list --format json -n 1 2>/dev/null | jq -r '.[0].id')
-cat << 'EOF_SUMMARY' | ~/.config/opencode/skills/amnesia/save.sh --id "$SESSION_ID" --title "TITLE_HERE" --tags "tag1,tag2,tag3" --full-content "FULL_CONVERSATION_TRANSCRIPT"
+# Generate unique temp files
+TEMP_SUMMARY=$(mktemp)
+TEMP_TRANSCRIPT=$(mktemp)
+trap "rm -f $TEMP_SUMMARY $TEMP_TRANSCRIPT" EXIT
+
+# Write your summary to the temp file
+cat > "$TEMP_SUMMARY" << 'EOF_SUMMARY'
 YOUR_SUMMARY_MARKDOWN_HERE
 EOF_SUMMARY
+
+# Write the full conversation to the temp transcript file
+cat > "$TEMP_TRANSCRIPT" << 'EOF_TRANSCRIPT'
+USER: [user message 1]
+ASSISTANT: [assistant response 1]
+USER: [user message 2]
+ASSISTANT: [assistant response 2]
+...
+EOF_TRANSCRIPT
+
+# Save with automatic session ID
+SESSION_ID=$(opencode session list --format json -n 1 2>/dev/null | jq -r '.[0].id')
+~/.config/opencode/skills/amnesia/save.sh \
+    --id "$SESSION_ID" \
+    --title "TITLE_HERE" \
+    --tags "tag1,tag2,tag3" \
+    --summary-file "$TEMP_SUMMARY" \
+    --full-content-file "$TEMP_TRANSCRIPT"
 ```
 
 Replace:
 - `TITLE_HERE` with a descriptive title (keep it concise, 5-10 words)
-- `tag1,tag2,tag3` with 3-5 relevant tags from the list in step 2
-- `FULL_CONVERSATION_TRANSCRIPT` with the complete conversation (user and assistant messages)
-- `YOUR_SUMMARY_MARKDOWN_HERE` with the generated summary
+- `tag1,tag2,tag3` with 3-5 relevant tags
+- Content between `EOF_SUMMARY` markers with your generated summary markdown
+- Content between `EOF_TRANSCRIPT` markers with the complete conversation (user and assistant messages)
 
 **IMPORTANT**: 
 - DO NOT manually type the session ID - let the command fetch it automatically
+- Use temp files for multi-line content to avoid quoting issues
 - The full_content field should contain ONLY the raw conversation - no prefixes, no annotations
 - Tags should be comma-separated, no spaces
 

@@ -3,8 +3,11 @@
 # amnesia - save.sh
 # Save a memory to the database
 #
-# Usage: echo "summary" | save.sh --title "Title" [--full-content "..."] [--tags "tag1,tag2"] [--id "custom-id"]
+# Usage: 
+#   echo "summary" | save.sh --title "Title" [--full-content-file FILE] [--tags "tag1,tag2"] [--id "custom-id"]
+#   save.sh --title "Title" --summary-file FILE --full-content-file FILE [--tags "tag1,tag2"] [--id "custom-id"]
 #
+# For large multi-line content, use --full-content-file or pipe via stdin
 
 set -euo pipefail
 
@@ -16,6 +19,8 @@ TITLE=""
 TAGS=""
 ID=""
 FULL_CONTENT=""
+FULL_CONTENT_FILE=""
+SUMMARY_FILE=""
 INIT=false
 
 while [[ $# -gt 0 ]]; do
@@ -33,7 +38,16 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --full-content)
+            # DEPRECATED: Use --full-content-file instead for multi-line content
             FULL_CONTENT="$2"
+            shift 2
+            ;;
+        --full-content-file)
+            FULL_CONTENT_FILE="$2"
+            shift 2
+            ;;
+        --summary-file)
+            SUMMARY_FILE="$2"
             shift 2
             ;;
         --init)
@@ -41,15 +55,28 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            echo "Usage: echo 'summary' | $0 --title 'Title' [--full-content '...'] [--tags 'tag1,tag2'] [--id 'id']"
+            echo "Usage:"
+            echo "  echo 'summary' | $0 --title 'Title' [OPTIONS]"
+            echo "  $0 --title 'Title' --summary-file SUMMARY_FILE --full-content-file TRANSCRIPT_FILE [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  -t, --title        Title for the memory (required)"
-            echo "  --full-content     Full conversation content (optional)"
-            echo "  --tags             Comma-separated tags"
-            echo "  --id               Custom ID (defaults to timestamp-based)"
-            echo "  --init             Initialize database if it doesn't exist"
-            echo "  -h, --help         Show this help"
+            echo "  -t, --title              Title for the memory (required)"
+            echo "  --summary-file FILE      Read summary from file instead of stdin"
+            echo "  --full-content-file FILE Read full conversation from file (for multi-line)"
+            echo "  --tags TAGS              Comma-separated tags"
+            echo "  --id ID                  Custom ID (defaults to timestamp-based)"
+            echo "  --init                   Initialize database if it doesn't exist"
+            echo "  -h, --help               Show this help"
+            echo ""
+            echo "Examples:"
+            echo "  # Save from stdin (summary only)"
+            echo "  echo 'We fixed it by...' | $0 --title 'Auth Fix' --tags 'auth,bug'"
+            echo ""
+            echo "  # Save with full conversation from file"
+            echo "  $0 --title 'My Session' --summary-file summary.md --full-content-file transcript.txt"
+            echo ""
+            echo "  # Pipe full content to stdin, summary from file"
+            echo "  cat transcript.txt | $0 --title 'Session' --summary-file summary.md --full-content-file /dev/stdin"
             exit 0
             ;;
         *)
@@ -93,12 +120,29 @@ if [[ -z "$TITLE" ]]; then
     exit 1
 fi
 
-# Read summary from stdin
-CONTENT=$(cat)
+# Read summary (from file or stdin)
+if [[ -n "$SUMMARY_FILE" ]]; then
+    if [[ ! -f "$SUMMARY_FILE" ]]; then
+        echo "Error: Summary file not found: $SUMMARY_FILE" >&2
+        exit 1
+    fi
+    CONTENT=$(cat "$SUMMARY_FILE")
+else
+    CONTENT=$(cat)
+fi
 
 if [[ -z "$CONTENT" ]]; then
-    echo "Error: No summary provided via stdin" >&2
+    echo "Error: No summary provided (via stdin or --summary-file)" >&2
     exit 1
+fi
+
+# Read full content (from file if specified, otherwise use parameter)
+if [[ -n "$FULL_CONTENT_FILE" ]]; then
+    if [[ ! -f "$FULL_CONTENT_FILE" ]]; then
+        echo "Error: Full content file not found: $FULL_CONTENT_FILE" >&2
+        exit 1
+    fi
+    FULL_CONTENT=$(cat "$FULL_CONTENT_FILE")
 fi
 
 # Generate ID if not provided

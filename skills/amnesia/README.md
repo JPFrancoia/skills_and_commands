@@ -45,9 +45,48 @@ Or save the conversation:
 # Search memories (--init creates database on first run)
 ~/.config/opencode/skills/amnesia/query.sh --init "authentication bug"
 
-# Save a memory
+# Quick save (summary only)
 echo "We fixed it by..." | ~/.config/opencode/skills/amnesia/save.sh --init --title "Auth Fix" --tags "auth,bug"
+
+# Save with full conversation (recommended for complex content)
+~/.config/opencode/skills/amnesia/save.sh \
+    --title "Auth Fix" \
+    --tags "auth,bug" \
+    --summary-file summary.md \
+    --full-content-file transcript.txt
 ```
+
+### Handling Multi-Line Content
+
+For conversations with multi-line content, use **temporary files** to avoid shell quoting issues:
+
+```bash
+# Create temp files
+TEMP_SUMMARY=$(mktemp)
+TEMP_TRANSCRIPT=$(mktemp)
+trap "rm -f $TEMP_SUMMARY $TEMP_TRANSCRIPT" EXIT
+
+# Write summary
+cat > "$TEMP_SUMMARY" << 'EOF'
+## Summary
+Multi-line summary content here...
+EOF
+
+# Write transcript
+cat > "$TEMP_TRANSCRIPT" << 'EOF'
+USER: First message
+ASSISTANT: First response
+...
+EOF
+
+# Save
+~/.config/opencode/skills/amnesia/save.sh \
+    --title "Session Title" \
+    --summary-file "$TEMP_SUMMARY" \
+    --full-content-file "$TEMP_TRANSCRIPT"
+```
+
+This prevents shell escaping errors with complex multi-line content.
 
 ## How It Works
 
@@ -102,6 +141,54 @@ amnesia/
 ├── init-db.sh    # Database setup
 ├── embed.py      # Embedding utilities
 └── README.md     # This file
+```
+
+## Troubleshooting
+
+### Issue: Shell Quoting Errors When Saving Large Content
+
+**Symptom**: `unmatched '` or `unmatched "` errors when running save command
+
+**Solution**: Use temporary files instead of passing content as arguments:
+
+```bash
+# ❌ Avoid: Passing multi-line content as arguments
+save.sh --title "Title" --full-content "$LARGE_CONTENT"
+
+# ✅ Use: Temporary files
+TEMP=$(mktemp)
+echo "$LARGE_CONTENT" > "$TEMP"
+save.sh --title "Title" --full-content-file "$TEMP"
+rm "$TEMP"
+```
+
+### Issue: full_content Field Not Populated
+
+**Symptom**: Saved memory exists but `full_content` column is empty
+
+**Solution**: Use `--full-content-file` parameter:
+
+```bash
+# ❌ Old way (deprecated)
+save.sh --title "Title" --full-content "content"
+
+# ✅ New way
+save.sh --title "Title" --full-content-file transcript.txt
+```
+
+### Issue: Database Errors
+
+**Symptom**: "Database is locked" or similar SQLite errors
+
+**Solution**: Wait a moment and retry. If persistent, check that only one process is accessing the database:
+
+```bash
+# Check for locks
+lsof ~/amnesia/memories.db 2>/dev/null || echo "No locks"
+
+# Reinitialize if corrupted
+rm ~/amnesia/memories.db
+~/.config/opencode/skills/amnesia/init-db.sh
 ```
 
 ## Dependencies
