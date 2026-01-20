@@ -64,7 +64,7 @@ PROJECT_ROOT="${PROJECT_ROOT/#\~/$HOME}"
 # Check if vectorcode is available
 if ! command -v vectorcode &> /dev/null; then
     echo "Error: vectorcode command not found"
-    echo "Please install VectorCode: https://github.com/PeterPerhac/vectorcode"
+    echo "Please install VectorCode: https://github.com/Davidyz/VectorCode"
     exit 1
 fi
 

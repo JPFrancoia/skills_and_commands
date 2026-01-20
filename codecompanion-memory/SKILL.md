@@ -1,12 +1,15 @@
 ---
 name: codecompanion-memory
-description: Search through previous CodeCompanion chat conversations using semantic search. Use this skill when the user mentions past conversations, asks "do you remember", or when historical context from previous sessions would help solve the current problem.
-allowed-tools: Bash, mcp__acp__Read, Skill
+description: Search and save conversation memories using semantic search. Use this skill when the user mentions past conversations, asks "do you remember", or when historical context from previous sessions would help solve the current problem.
 ---
 
 # CodeCompanion Memory Skill
 
-This skill provides access to a searchable history of previous CodeCompanion conversations stored in a ChromaDB vector database. It uses semantic search to find relevant past conversations based on natural language queries.
+This skill provides access to a searchable history of previous conversations stored in a ChromaDB vector database. It supports both **retrieving** past conversations via semantic search and **saving** new conversation summaries.
+
+The same database is shared between:
+- **Neovim** (via codecompanion-history.nvim plugin)
+- **OpenCode** (via this skill and the `/sum` command)
 
 ## When to Use This Skill
 
@@ -18,13 +21,13 @@ Invoke this skill when:
 - **User asks about their codebase**: Questions about past work, project history, or previous implementations
 - **Building on previous work**: Extending or modifying solutions from past conversations
 
-## Usage
+## Querying Memories
 
 ```bash
-~/.claude/skills/codecompanion-memory/query.sh --query "your search query"
+~/.config/opencode/skills/codecompanion-memory/query.sh --query "your search query"
 ```
 
-### Parameters
+### Query Parameters
 
 - `--query TEXT` or `-q TEXT`: The search query (required)
   - Use natural language
@@ -43,13 +46,63 @@ Invoke this skill when:
 
 - `--help` or `-h`: Show help message
 
+## Saving Memories
+
+To save a new conversation summary:
+
+```bash
+echo 'YOUR_SUMMARY_MARKDOWN' | ~/.config/opencode/skills/codecompanion-memory/save-summary.sh --title "Title"
+```
+
+### Save Parameters
+
+- `--title TEXT` or `-t TEXT`: Title for the summary (optional but recommended)
+- `--dir PATH` or `-d PATH`: Override summaries directory (default: ~/codecompanion-history/summaries)
+- `--help` or `-h`: Show help message
+
+The summary should be passed via stdin as markdown content.
+
+### Summary Format
+
+When saving a summary, use this structure:
+
+```markdown
+# Descriptive Title
+
+## Date
+YYYY-MM-DD
+
+## Project Context
+- **Working Directory**: /path/to/project
+- **Project Root**: /path/to/project
+
+## Summary
+2-3 paragraph summary of what was discussed and key decisions made.
+
+## Key Topics
+- Topic 1
+- Topic 2
+
+## Technical Details
+Important technical information, code patterns, or solutions.
+
+## Code Changes
+List of files modified with brief descriptions.
+
+## Outcome
+What was the result? Was the problem solved?
+
+## Tags
+python, docker, authentication, bug-fix
+```
+
 ## Example Queries
 
 ### Finding Past Solutions
 
 ```bash
 # User: "I'm getting a CORS error, have we dealt with this before?"
-~/.claude/skills/codecompanion-memory/query.sh \
+~/.config/opencode/skills/codecompanion-memory/query.sh \
   --query "CORS error HTTP request" \
   --count 3
 ```
@@ -58,7 +111,7 @@ Invoke this skill when:
 
 ```bash
 # User: "What database did we choose for the user service?"
-~/.claude/skills/codecompanion-memory/query.sh \
+~/.config/opencode/skills/codecompanion-memory/query.sh \
   --query "database choice user service" \
   --count 5 \
   --verbose
@@ -68,7 +121,7 @@ Invoke this skill when:
 
 ```bash
 # User: "How did I implement authentication last time?"
-~/.claude/skills/codecompanion-memory/query.sh \
+~/.config/opencode/skills/codecompanion-memory/query.sh \
   --query "authentication implementation pattern" \
   --count 3 \
   --verbose
@@ -76,10 +129,10 @@ Invoke this skill when:
 
 ## Output Format
 
-Results are displayed in order of relevance:
+Query results are displayed in order of relevance:
 
 ```
-Searching in: /home/djipey/codecompanion-history/summaries
+Searching in: /home/user/codecompanion-history/summaries
 Query: Arduino
 
 --- Result 1 ---
@@ -104,13 +157,13 @@ You can read the full conversation summary files at:
 
 ```
 User Query
-    ↓
+    |
 Bash Script (query.sh)
-    ↓
+    |
 VectorCode CLI
-    ↓
+    |
 ChromaDB (local instance)
-    ↓
+    |
 Semantic Search Results
 ```
 
@@ -131,30 +184,19 @@ The database uses **semantic embeddings**, meaning:
 - Synonyms and related terms are automatically understood
 - Context and meaning are preserved across different phrasings
 
-## Installation
+## Shared Between Neovim and OpenCode
 
-The skill is installed at `~/.claude/skills/codecompanion-memory/`.
+Summaries from both sources are stored in the same location:
+- **Neovim (codecompanion-history.nvim)**: Uses the `gcs` keymap to generate summaries
+- **OpenCode**: Uses the `/sum` command to generate summaries
 
-If you need to reinstall or update:
-
-```bash
-mkdir -p ~/.claude/skills/codecompanion-memory
-
-# Copy required files from source
-cp /path/to/source/SKILL.md \
-   ~/.claude/skills/codecompanion-memory/
-cp /path/to/source/query.sh \
-   ~/.claude/skills/codecompanion-memory/
-
-# Make script executable
-chmod +x ~/.claude/skills/codecompanion-memory/query.sh
-```
+Both are indexed by VectorCode and searchable from either environment.
 
 ## Dependencies
 
 - `bash`: Shell interpreter
-- `python3`: For JSON parsing in the script
-- `vectorcode`: CLI tool for querying ChromaDB
+- `python3`: For JSON parsing in the query script
+- `vectorcode`: CLI tool for querying/indexing ChromaDB
 
 ### Installing VectorCode
 
@@ -164,19 +206,15 @@ If VectorCode is not installed:
 # Using pipx (recommended)
 pipx install vectorcode
 
+# Or using uv
+uv tool install vectorcode
+
 # Or using pip
 pip install --user vectorcode
 
 # Verify installation
 which vectorcode
 ```
-
-## Performance
-
-- **First query**: ~3s (VectorCode cold start)
-- **Subsequent queries**: ~1-2s
-- **Memory usage**: ~150MB (VectorCode + ChromaDB server)
-- **Disk space**: ~3KB (just the script)
 
 ## Troubleshooting
 
@@ -195,6 +233,7 @@ which vectorcode
 - Try broader queries: "Docker" instead of "Docker Compose networking with custom bridge"
 - Check if conversations are indexed: `ls ~/codecompanion-history/summaries/`
 - Verify database exists: `ls ~/.local/share/vectorcode/chromadb/`
+- Re-index summaries: `cd ~/codecompanion-history/summaries && vectorcode vectorise --pipe *.md`
 
 ### VectorCode configuration
 
@@ -223,51 +262,24 @@ Note: The skill works fine with VectorCode's default local database.
 User: "I'm stuck on the same authentication bug we had last month"
 
 Step 1: Search for relevant conversations
-→ ./query.sh --query "authentication bug fix" --count 5
+$ ./query.sh --query "authentication bug fix" --count 5
 
 Step 2: Review results, identify the most relevant conversation
-→ Result 3 seems most relevant (Path: 1763841695.md)
+> Result 3 seems most relevant (Path: 1763841695.md)
 
 Step 3: Read full summary if needed
-→ cat ~/codecompanion-history/summaries/1763841695.md
+$ cat ~/codecompanion-history/summaries/1763841695.md
 
 Step 4: Apply the solution or adapt it to current context
 
 Step 5: Inform user
-→ "I found a similar issue we solved in conversation 1763841695. 
+> "I found a similar issue we solved in conversation 1763841695. 
    The problem was related to session token expiration. 
    Here's what we did..."
 ```
 
-## Technical Details
-
-### Script Implementation
-
-The skill is a simple Bash wrapper that:
-1. Validates and parses command-line arguments
-2. Calls `vectorcode query` with appropriate parameters
-3. Formats the JSON output for display
-4. Handles errors gracefully
-
-### Why VectorCode?
-
-VectorCode handles:
-- ChromaDB connection and configuration
-- Embedding generation for queries
-- Collection management
-- Query execution
-
-This makes the skill implementation simple and reliable.
-
-## Integration Notes
-
-This skill is designed to work seamlessly with Claude Code's skill system:
-- Automatically loaded when referenced or when the user mentions past conversations
-- Runs independently without blocking other operations
-- Returns structured data that can be easily parsed and presented to the user
-
 ---
 
-**Status**: ✅ Production ready  
-**Location**: `~/.claude/skills/codecompanion-memory/`  
-**Last Updated**: 2025-12-15
+**Status**: Production ready  
+**Location**: `~/.config/opencode/skills/codecompanion-memory/`  
+**Last Updated**: 2026-01-20
