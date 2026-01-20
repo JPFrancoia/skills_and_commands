@@ -1,5 +1,6 @@
 ---
 description: Summarize this conversation and save to memory
+model: anthropic/claude-4-5-haiku-20250110
 ---
 
 You are tasked with summarizing the current conversation and saving it as a memory for future reference.
@@ -13,7 +14,16 @@ The current session ID is:
 
 1. **Analyze the entire conversation** above this message carefully.
 
-2. **Generate a comprehensive summary** in markdown format with the following structure:
+2. **Capture the full conversation transcript** by reviewing all messages exchanged in this session, formatting them as:
+```
+USER: [first user message]
+ASSISTANT: [first assistant response]
+USER: [second user message]
+ASSISTANT: [second assistant response]
+...
+```
+
+3. **Generate a comprehensive summary** in markdown format with the following structure:
 
 ```markdown
 # [Descriptive Title of the Conversation]
@@ -46,22 +56,29 @@ The current session ID is:
 [Relevant keywords for semantic search, e.g.: python, docker, authentication, bug-fix, refactoring]
 ```
 
-3. **Save the summary** by running the following command with the summary content.
+4. **Save the summary** by running the following command with the summary content.
 
-**IMPORTANT**: Use the `--id` flag with the session ID from above to ensure updates to the same conversation overwrite the previous summary instead of creating a new file.
+**CRITICAL**: You MUST use the exact command below. The session ID is automatically captured via command substitution to ensure updates overwrite the previous summary instead of creating duplicates.
 
 ```bash
-cat << 'EOF' | ~/.config/opencode/skills/codecompanion-memory/save-summary.sh --id "SESSION_ID_HERE" --title "TITLE_HERE"
+SESSION_ID=$(opencode session list --format json -n 1 2>/dev/null | jq -r '.[0].id')
+cat << 'EOF_SUMMARY' | ~/.config/opencode/skills/amnesia/save.sh --id "$SESSION_ID" --title "TITLE_HERE" --tags "tag1,tag2,tag3" --full-content "FULL_CONVERSATION_TRANSCRIPT"
 YOUR_SUMMARY_MARKDOWN_HERE
-EOF
+EOF_SUMMARY
 ```
 
 Replace:
-- `SESSION_ID_HERE` with the actual session ID shown above
-- `TITLE_HERE` with a descriptive title
+- `TITLE_HERE` with a descriptive title (keep it concise, 5-10 words)
+- `tag1,tag2,tag3` with 3-5 relevant tags from the list in step 2
+- `FULL_CONVERSATION_TRANSCRIPT` with the complete conversation (user and assistant messages)
 - `YOUR_SUMMARY_MARKDOWN_HERE` with the generated summary
 
-4. **Report the result** to the user, including:
+**IMPORTANT**: 
+- DO NOT manually type the session ID - let the command fetch it automatically
+- The full_content field should contain ONLY the raw conversation - no prefixes, no annotations
+- Tags should be comma-separated, no spaces
+
+5. **Report the result** to the user, including:
    - The file path where the summary was saved
    - Whether this was a new summary or an update to an existing one
    - Confirmation that it was indexed for semantic search
