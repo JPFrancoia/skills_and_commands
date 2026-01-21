@@ -1,0 +1,199 @@
+---
+description: Scan past project sessions for learnings and save to AGENTS.md
+---
+
+## Your Task
+
+Scan past sessions for this project and extract reusable learnings (corrections, preferences, patterns).
+
+### Step 1: Get Project Sessions
+
+List sessions for the current project:
+
+!`opencode session list --format json -n 50`
+
+Parse the JSON to get session IDs. Note the session titles and dates for later reference.
+
+### Step 2: Export and Analyze Each Session
+
+For each session, export it and extract user messages:
+
+```bash
+opencode export <session_id>
+```
+
+From the exported JSON, extract user messages:
+- Look in `messages[]` where `info.role === "user"`
+- Get text from `parts[]` where `type === "text"`
+
+### Step 3: Detect Correction Patterns
+
+Scan each user message for these patterns:
+
+**High Confidence — Direct Corrections:**
+- `^no[,. ]+` — starts with "no,"
+- `^don't\b|^do not\b` — starts with don't/do not
+- `remember:` — explicit learning marker
+- `that's (wrong|incorrect)` — error correction
+- `use .{1,30} not\b` — "use X not Y"
+- `^stop\b|^never\b` — prohibition
+- `^I told you\b|^I already` — repeated correction
+
+**Medium Confidence — Implicit Corrections:**
+- `^actually[,. ]` — implicit correction
+- `^I meant\b|^I said\b` — clarification
+- `^ok I actually don't` — rejecting a change
+- `let's give up on` — abandoning approach
+- `just revert` — undo request
+- `I don't want .+ anymore` — preference change
+
+**Guidance/Direction:**
+- `^what I want you to do is` — explicit instruction after confusion
+- `^can we .+ instead` — suggesting alternative
+- `slow down` — pacing correction
+- `no I meant` — clarification
+- `^trust me` — overriding AI hesitation
+- `^assume` — telling AI to accept something
+
+**Simplification Requests:**
+- `can we simplify` — complexity reduction
+- `let's clean .+ and focus` — scope reduction
+- `can we reduce` — minimization
+- `get rid of` — removal request
+
+**Positive Reinforcement (behaviors to keep):**
+- `^excellent` — strong approval
+- `^great,` — approval
+- `^perfect` — approval
+- `that's exactly` — confirmation
+
+### Step 4: Filter Out False Positives
+
+**SKIP these patterns:**
+- Messages ending with `?` (questions, not corrections)
+- `^can you tell me` — information requests
+- `^how is .+ calculated` — explanation requests
+- `^give me` — simple requests
+- `^:qa$` — vim commands
+- `^/\w+` — slash commands
+- `^Summarize this` — /sum command content
+- `^You are tasked` — injected prompts
+- Messages shorter than 10 characters
+
+### Step 5: Validate Each Finding
+
+For each detected pattern, evaluate:
+
+1. **Reusable?** — Would this apply to future sessions in this project?
+2. **Actionable?** — Can it be expressed as a clear rule?
+3. **Specific?** — Is it concrete enough to follow?
+
+**REJECT:**
+- One-time task instructions ("fix this specific bug")
+- Context-specific requests ("in this file only")
+- Vague feedback ("that's better")
+- Questions or requests for information
+
+**ACCEPT:**
+- Tool/model preferences ("use rg instead of grep")
+- Coding conventions ("always use venv")
+- Error patterns to avoid ("don't assume localhost")
+- Workflow preferences ("run tests before committing")
+- Architectural decisions ("keep logic in Python, not bash")
+
+### Step 6: Deduplicate
+
+1. Remove duplicate learnings from the scan
+2. Read existing `./AGENTS.md` if it exists
+3. Check for similar entries already present
+4. Flag duplicates for user review
+
+### Step 7: Present Findings
+
+Show detected learnings grouped by confidence:
+
+```
+═══════════════════════════════════════════════════════════
+LEARNINGS FROM PROJECT SESSIONS
+Scanned: N sessions | Found: M potential learnings
+═══════════════════════════════════════════════════════════
+
+HIGH CONFIDENCE:
+#1 "Use venv, not conda, for this project"
+   Source: "Python setup" (2 days ago)
+   Original: "No, use venv not conda"
+
+#2 "Always run tests before committing"
+   Source: "CI pipeline fix" (5 days ago)
+   Original: "I told you to run tests first"
+   ⚠ Similar exists in AGENTS.md
+
+MEDIUM CONFIDENCE:
+#3 "Keep database logic in Python scripts"
+   Source: "Refactoring session" (1 week ago)
+   Original: "I'd like to move all the logic to embed.py, out of save.sh"
+
+POSITIVE PATTERNS (behaviors to reinforce):
+#4 "Explain changes before making them"
+   Source: "Code review" (3 days ago)
+   Original: "Perfect, I like that you explained first"
+
+═══════════════════════════════════════════════════════════
+```
+
+### Step 8: Get User Approval
+
+Ask the user what to do:
+
+**Options:**
+- **Apply all** — Add all learnings to AGENTS.md
+- **Select which** — Choose specific learnings to apply
+- **Review each** — Go through one by one with edit option
+- **Skip** — Don't save anything
+
+### Step 9: Write to AGENTS.md
+
+Add approved learnings to `./AGENTS.md` under a `## Learnings` section.
+
+**If AGENTS.md doesn't exist:** Create it with:
+```markdown
+## Learnings
+
+<!-- Generated by /reflect -->
+
+- [learning 1]
+- [learning 2]
+```
+
+**If AGENTS.md exists but has no Learnings section:** Add the section at the end.
+
+**If Learnings section exists:** Append new learnings to it.
+
+Format each learning as a clear, actionable bullet point:
+- Start with a verb when possible ("Use", "Always", "Never", "Prefer")
+- Be specific but concise
+- Include context if needed ("for this project", "in Python files")
+
+### Step 10: Confirm
+
+Show what was added:
+
+```
+═══════════════════════════════════════════════════════════
+DONE: Added N learnings to ./AGENTS.md
+═══════════════════════════════════════════════════════════
+
+Added:
+- Use venv, not conda, for this project
+- Always run tests before committing
+- Keep database logic in Python scripts
+
+Skipped: M (duplicates or rejected)
+═══════════════════════════════════════════════════════════
+```
+
+## Arguments
+
+- `$ARGUMENTS`: Optional flags
+  - `--days N`: Only scan sessions from last N days (default: all)
+  - `--dry-run`: Show findings without writing to AGENTS.md
