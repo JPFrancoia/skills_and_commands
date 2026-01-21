@@ -30,6 +30,25 @@ _model = None
 SUM_PROMPT_PREFIX = "You are tasked with summarizing the current conversation"
 
 
+def get_current_session() -> dict:
+    """Get the current session info from opencode."""
+    result = subprocess.run(
+        ["opencode", "session", "list", "--format", "json", "-n", "1"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to get session list: {result.stderr}")
+
+    try:
+        sessions = json.loads(result.stdout)
+        if not sessions:
+            raise RuntimeError("No sessions found")
+        return sessions[0]
+    except (json.JSONDecodeError, KeyError, IndexError) as e:
+        raise RuntimeError(f"Failed to parse session list: {e}")
+
+
 def get_model():
     """Lazy load the embedding model."""
     global _model
@@ -251,8 +270,10 @@ def main():
 
     # save command
     save_parser = subparsers.add_parser("save", help="Save a memory")
-    save_parser.add_argument("--id", required=True, help="Session ID")
-    save_parser.add_argument("--title", "-t", required=True, help="Memory title")
+    save_parser.add_argument("--id", help="Session ID (auto-detected if not provided)")
+    save_parser.add_argument(
+        "--title", "-t", help="Memory title (uses session title if not provided)"
+    )
     save_parser.add_argument("--tags", default="", help="Comma-separated tags")
     save_parser.add_argument(
         "--summary-file", help="Read summary from file instead of stdin"
@@ -293,6 +314,20 @@ def main():
                 print("Run 'save.py init' to create it", file=sys.stderr)
                 sys.exit(1)
 
+        # Get session info (auto-detect if not provided)
+        session_id = args.id
+        title = args.title
+        if not session_id or not title:
+            try:
+                session = get_current_session()
+                if not session_id:
+                    session_id = session["id"]
+                if not title:
+                    title = session.get("title", "Untitled Session")
+            except Exception as e:
+                print(f"Error: Failed to get session info: {e}", file=sys.stderr)
+                sys.exit(1)
+
         # Read summary
         if args.summary_file:
             with open(args.summary_file, "r") as f:
@@ -306,12 +341,12 @@ def main():
 
         # Export session
         try:
-            full_content = export_session(args.id)
+            full_content = export_session(session_id)
         except Exception as e:
             print(f"Error exporting session: {e}", file=sys.stderr)
             sys.exit(1)
 
-        save_memory(db_path, args.id, args.title, content, full_content, args.tags)
+        save_memory(db_path, session_id, title, content, full_content, args.tags)
 
     elif args.command == "query":
         if not os.path.exists(db_path):
