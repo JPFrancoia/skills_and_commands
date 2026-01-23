@@ -1,0 +1,9 @@
+[project]
+name = "deep-research"
+version = "0.1.0"
+description = "Gemini Deep Research Skill"
+requires-python = ">=3.8"
+dependencies = [
+    "httpx>=0.25.0",
+    "python-dotenv>=1.0.0",
+]
