@@ -22,12 +22,35 @@ except ImportError:
     print("Error: httpx not installed. Run: pip install httpx", file=sys.stderr)
     sys.exit(1)
 
+import subprocess
+
 try:
     from dotenv import load_dotenv
 
     load_dotenv()
 except ImportError:
     pass  # dotenv is optional
+
+
+def get_api_key_from_pass(pass_path: str = "api_keys/gemini") -> Optional[str]:
+    """
+    Retrieve API key from pass (password store).
+
+    Args:
+        pass_path: Path to the key in pass store
+
+    Returns:
+        The API key or None if not found
+    """
+    try:
+        result = subprocess.run(
+            ["pass", "show", pass_path], capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+        pass
+    return None
 
 
 class DeepResearchError(Exception):
@@ -132,10 +155,10 @@ class DeepResearchClient:
     AGENT = "deep-research-pro-preview-12-2025"
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or get_api_key_from_pass()
         if not self.api_key:
             raise DeepResearchError(
-                "GEMINI_API_KEY not set. Set it in .env or environment variables."
+                "GEMINI_API_KEY not set. Set it in .env, environment variables, or pass (api_keys/gemini)."
             )
         self._client: Optional[httpx.AsyncClient] = None
         self.timeout = int(os.getenv("DEEP_RESEARCH_TIMEOUT", "600"))
