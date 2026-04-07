@@ -1,7 +1,7 @@
 ---
 description: Go code reviewer acting as JPFrancoia's digital twin. Reviews diffs and files against personal coding conventions.
 mode: subagent
-model: anthropic/claude-sonnet-4-20250514
+model: anthropic/claude-opus-4-6
 temperature: 0.1
 permission:
   edit: deny
