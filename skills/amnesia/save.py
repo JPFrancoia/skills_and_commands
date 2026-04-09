@@ -23,6 +23,10 @@ import sqlite3
 import argparse
 import subprocess
 import tempfile
+import contextlib
+import io
+import logging
+import warnings
 
 # Lazy load heavy imports
 _model = None
@@ -53,9 +57,29 @@ def get_model():
     """Lazy load the embedding model."""
     global _model
     if _model is None:
-        from sentence_transformers import SentenceTransformer
+        os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+        os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-        _model = SentenceTransformer("all-mpnet-base-v2")
+        logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+        logging.getLogger("transformers").setLevel(logging.ERROR)
+        logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+        warnings.filterwarnings("ignore", module="huggingface_hub")
+
+        sink = io.StringIO()
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            from sentence_transformers import SentenceTransformer
+
+            try:
+                from transformers.utils import logging as hf_logging
+
+                hf_logging.set_verbosity_error()
+                hf_logging.disable_progress_bar()
+            except Exception:
+                pass
+
+            _model = SentenceTransformer("all-mpnet-base-v2")
+
     return _model
 
 
@@ -77,7 +101,9 @@ def get_connection(db_path: str):
 def get_embedding(text: str) -> list[float]:
     """Generate embedding for text."""
     model = get_model()
-    embedding = model.encode(text, convert_to_numpy=True)
+    sink = io.StringIO()
+    with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+        embedding = model.encode(text, convert_to_numpy=True)
     return embedding.tolist()
 
 
