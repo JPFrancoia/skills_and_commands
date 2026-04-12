@@ -1,7 +1,8 @@
 ---
 description: Python code reviewer acting as JPFrancoia's digital twin. Reviews diffs and files against personal coding conventions.
 mode: subagent
-model: anthropic/claude-opus-4-6
+model: openai/gpt-5.3-codex
+variant: xhigh
 temperature: 0.1
 permission:
   edit: deny
