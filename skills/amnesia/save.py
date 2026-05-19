@@ -121,10 +121,17 @@ def init_db(db_path: str):
             content TEXT NOT NULL,
             full_content TEXT,
             tags TEXT,
+            session_directory TEXT,
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         )
     """)
+
+    # Migrate existing databases: add session_directory column if missing
+    try:
+        conn.execute("ALTER TABLE memories ADD COLUMN session_directory TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at)"
     )
@@ -203,22 +210,24 @@ def save_memory(
     content: str,
     full_content: str = "",
     tags: str = "",
+    session_directory: str = "",
 ):
     """Save a memory to the database."""
     conn = get_connection(db_path)
 
     conn.execute(
         """
-        INSERT INTO memories (id, title, content, full_content, tags, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        INSERT INTO memories (id, title, content, full_content, tags, session_directory, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             content = excluded.content,
             full_content = excluded.full_content,
             tags = excluded.tags,
+            session_directory = excluded.session_directory,
             updated_at = datetime('now')
         """,
-        (memory_id, title, content, full_content, tags),
+        (memory_id, title, content, full_content, tags, session_directory),
     )
     conn.commit()
 
@@ -253,7 +262,8 @@ def query_memories(db_path: str, query: str, limit: int = 5, show_full: bool = F
             m.content,
             m.full_content,
             m.tags,
-            m.created_at
+            m.created_at,
+            m.session_directory
         FROM memories_vec v
         JOIN memories m ON v.id = m.id
         WHERE v.embedding MATCH ? AND k = ?
@@ -266,7 +276,7 @@ def query_memories(db_path: str, query: str, limit: int = 5, show_full: bool = F
 
     print(f"Semantic search for: {query}\n")
 
-    for i, (id, distance, title, content, full_content, tags, created_at) in enumerate(
+    for i, (id, distance, title, content, full_content, tags, created_at, session_directory) in enumerate(
         results, 1
     ):
         similarity = math.exp(-distance) * 100
@@ -276,6 +286,7 @@ def query_memories(db_path: str, query: str, limit: int = 5, show_full: bool = F
         print(f"Title: {title}")
         print(f"Tags: {tags or '(none)'}")
         print(f"Date: {created_at}")
+        print(f"Directory: {session_directory or '(unknown)'}")
 
         if show_full and full_content:
             print(f"\n## Summary:\n{content}")
@@ -372,7 +383,11 @@ def main():
             print(f"Error exporting session: {e}", file=sys.stderr)
             sys.exit(1)
 
-        save_memory(db_path, session_id, title, content, full_content, args.tags)
+        session_directory = os.getcwd()
+        save_memory(
+            db_path, session_id, title, content, full_content, args.tags,
+            session_directory,
+        )
 
     elif args.command == "query":
         if not os.path.exists(db_path):
