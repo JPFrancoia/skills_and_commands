@@ -1,5 +1,5 @@
 ---
-name: grill-with-docs
+name: grill
 description: Grill implementation plans one question at a time, record answers in plans/<topic>-plan.md, and align terminology with docs/CONTEXT.md. Use when the user wants to discuss, stress-test, or refine a plan.
 ---
 
