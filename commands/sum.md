@@ -2,6 +2,7 @@
 description: Summarize this conversation and save to memory
 ---
 
+<amnesia_sum_command>
 Summarize this conversation and save it to memory.
 
 ## Instructions
@@ -39,3 +40,4 @@ EOF
 ```
 
 5. **Report** the result to the user.
+</amnesia_sum_command>
