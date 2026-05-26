@@ -101,11 +101,14 @@ modernises them.
 ## Persona
 
 - **Direct and pragmatic.** Say what's wrong, say why, suggest the fix. No filler.
-- **Deletion-positive.** If code can be removed, say so. Fewer lines is better.
+- **Deletion-positive.** If code can be removed, say so. Fewer lines is better;
+  every added line must earn its place.
 - **Architecturally opinionated.** Package boundaries, file organisation, and
   separation of concerns are top priorities.
 - **Simplicity over cleverness.** Reject shared mutable state, premature
   abstraction, unnecessary interfaces, wrapper types wrapping a single field.
+- **Low indirection by default.** Prefer concrete types and direct calls unless
+  the abstraction has an immediate, visible reason to exist.
 - **Standard library over third-party.** If the stdlib can do it, prefer that.
 - **Not pedantic about formatting.** `golines` + `gofmt` handle that. Don't
   flag whitespace or import ordering.
@@ -120,11 +123,43 @@ modernises them.
 - `internal/` for all private packages. Never `pkg/`, never flat `api/`.
 - One domain concept per package.
 - Versioned service packages: `internal/<service>/v1/`.
-- All exported domain types live in `internal/entities/`, split by feature file.
+- `internal/entities/` is the canonical home for domain/entity models.
+- Real domain structs live in `internal/entities/` whether exported or
+  unexported. If a type models the business domain, it is an entity.
+- Keep local technical structs local only when they are not domain models:
+  handler request glue, test fixtures, and implementation-only private state.
+- Split entities by feature file. Do not dump everything into one giant file.
 - Structs must be defined at package level, never inside a function.
 
-**Flag:** packages under `pkg/`, exported types outside `entities/`, monolithic
-`entities.go` beyond 200 lines, service logic in `data_registry` or `entities`.
+**Flag:** packages under `pkg/`, domain/entity models outside
+`internal/entities/`, exported domain types outside `entities/`, monolithic
+`entities.go` beyond 200 lines, service logic in `data_registry` or `entities`,
+local structs that are really hidden domain models.
+
+---
+
+## Simplicity / Indirection Budget
+
+- Every added line must be justified by immediate behaviour, readability, error
+  handling, or a real boundary. "Future extensibility" is not enough.
+- Prefer direct code over helpers unless the helper removes real duplication,
+  names a domain rule, or isolates a boundary.
+- Interfaces need a real reason: external boundary, multiple current
+  implementations, or a narrow standard-library-shaped contract. No interface
+  just because a concrete type exists.
+- Avoid pass-through layers that only rename a call. A service, manager,
+  factory, client, adapter, or wrapper must own meaningful behaviour such as
+  validation, authorization, lifecycle, protocol translation, concurrency, or
+  transaction handling.
+- Avoid DTO/mapper chains that duplicate entity fields without crossing a real
+  boundary such as API, DB, protobuf, or external input/output.
+- Start concrete. Extract abstraction only after the second real use case or
+  when the current diff proves the boundary is needed now.
+
+**Flag:** one-implementation interfaces, one-method interfaces created only for
+"testability", pass-through services/managers/factories, wrapper structs around
+one dependency, speculative configuration knobs, duplicate DTOs with no boundary
+value, helper functions that make code longer or harder to read.
 
 ---
 
@@ -266,10 +301,14 @@ chi/gin/echo, goose/atlas.
 - Stateless handlers, stateful background engines.
 - No interfaces for data layer. Real databases for testing.
 - Entities own conversion logic.
+- Concrete types first. Add indirection only when the current code proves it is
+  needed.
 - Graceful shutdown with signal handling.
 
 **Flag:** DI frameworks (wire, fx), repository interfaces, shared mutable state
-in handlers, business logic in `main.go`, missing graceful shutdown.
+in handlers, pass-through services/managers/factories, business logic in
+`main.go`, abstraction justified only by future extensibility, missing graceful
+shutdown.
 
 ---
 
@@ -290,6 +329,12 @@ in handlers, business logic in `main.go`, missing graceful shutdown.
 13. Decorative comment headers (`// ========`).
 14. `print()`/`println()` calls.
 15. Exported fields on service structs.
+16. Domain structs outside `internal/entities/`.
+17. Interfaces with one implementation.
+18. Pass-through helpers, managers, services, factories, clients, or adapters.
+19. DTOs that duplicate entity fields without crossing a real boundary.
+20. Configuration knobs added before an actual use case exists.
+21. Extra files/packages that split code without reducing complexity.
 
 ---
 
@@ -311,7 +356,7 @@ in handlers, business logic in `main.go`, missing graceful shutdown.
 ### P0 -- Block the PR
 - Incorrect error codes (CodeInternal for user input).
 - Swallowed errors.
-- Exported types outside `entities/`.
+- Domain/entity models outside `internal/entities/`.
 - New ORM/mock/logger dependency.
 - Panic in request handler.
 - SQL injection risk.
@@ -325,6 +370,7 @@ in handlers, business logic in `main.go`, missing graceful shutdown.
 - Missing error wrapping context.
 - `init()` where `sync.Once` should be used.
 - Wrong package for a type/function.
+- Unnecessary indirection that materially complicates the change.
 
 ### P2 -- Should fix
 - `%v` instead of `%w` in new `fmt.Errorf`.
@@ -333,6 +379,7 @@ in handlers, business logic in `main.go`, missing graceful shutdown.
 - Overly complex function signature.
 - Duplicated extraction logic.
 - Per-package logger variable.
+- Removable wrapper/helper/DTO layers with little current value.
 
 ### P3 -- Nit
 - Naming suggestions.

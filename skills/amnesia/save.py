@@ -31,7 +31,7 @@ import warnings
 # Lazy load heavy imports
 _model = None
 
-SUM_PROMPT_PREFIX = "You are tasked with summarizing the current conversation"
+SUM_COMMAND_MARKERS = ("<amnesia_sum_command>", "</amnesia_sum_command>")
 
 
 def get_current_session() -> dict:
@@ -107,6 +107,31 @@ def get_embedding(text: str) -> list[float]:
     return embedding.tolist()
 
 
+def get_message_text(msg: dict) -> str:
+    parts = msg.get("parts", [])
+    return "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+
+
+def filter_sum_command_messages(messages: list[dict]) -> list[dict]:
+    filtered = []
+    drop_following_assistants = False
+
+    for msg in messages:
+        role = msg.get("info", {}).get("role", "unknown")
+
+        if drop_following_assistants and role == "assistant":
+            continue
+        drop_following_assistants = False
+
+        if any(marker in get_message_text(msg) for marker in SUM_COMMAND_MARKERS):
+            drop_following_assistants = True
+            continue
+
+        filtered.append(msg)
+
+    return filtered
+
+
 def init_db(db_path: str):
     """Initialize the database and vector table."""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -175,25 +200,13 @@ def export_session(session_id: str) -> str:
         if not messages:
             raise RuntimeError("Session has no messages")
 
-        # Filter out /sum prompt and response if present at the end
-        def get_text(msg):
-            parts = msg.get("parts", [])
-            return "".join(p.get("text", "") for p in parts if p.get("type") == "text")
-
-        # Check last message
-        if messages and get_text(messages[-1]).startswith(SUM_PROMPT_PREFIX):
-            messages = messages[:-1]
-        # Check second-to-last message
-        elif len(messages) >= 2 and get_text(messages[-2]).startswith(
-            SUM_PROMPT_PREFIX
-        ):
-            messages = messages[:-2]
+        messages = filter_sum_command_messages(messages)
 
         # Format as USER:/ASSISTANT: pairs
         lines = []
         for msg in messages:
             role = msg.get("info", {}).get("role", "unknown").upper()
-            text = get_text(msg)
+            text = get_message_text(msg)
             lines.append(f"{role}: {text}")
 
         return "\n".join(lines)
