@@ -1,5 +1,5 @@
 ---
-name: thunderbird_calendar
+name: thunderbird-calendar
 description: Read-only access to Thunderbird/Betterbird calendar data (cached CalDAV). Query upcoming events, search by title/location, find free time slots, and generate .ics files for import. Use when the user asks about their schedule, calendar, availability, events, or appointments.
 ---
 

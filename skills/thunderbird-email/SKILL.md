@@ -1,5 +1,5 @@
 ---
-name: thunderbird_email
+name: thunderbird-email
 description: Read-only access to Thunderbird/Betterbird email via the local Gloda SQLite database and mbox files. Search emails, read message content, look up contacts, check unread counts. Use when the user asks about their email, messages, inbox, or contacts.
 ---
 
