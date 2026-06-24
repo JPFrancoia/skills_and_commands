@@ -27,6 +27,7 @@ import contextlib
 import io
 import logging
 import warnings
+from pathlib import Path
 
 # Lazy load heavy imports
 _model = None
@@ -34,7 +35,7 @@ _model = None
 SUM_COMMAND_MARKERS = ("<amnesia_sum_command>", "</amnesia_sum_command>")
 
 
-def get_current_session() -> dict:
+def get_current_opencode_session() -> dict:
     """Get the current session info from opencode."""
     result = subprocess.run(
         ["opencode", "session", "list", "--format", "json", "-n", "1"],
@@ -51,6 +52,141 @@ def get_current_session() -> dict:
         return sessions[0]
     except (json.JSONDecodeError, KeyError, IndexError) as e:
         raise RuntimeError(f"Failed to parse session list: {e}")
+
+
+def get_pi_session_root() -> Path:
+    return Path(
+        os.environ.get(
+            "PI_CODING_AGENT_SESSION_DIR",
+            os.path.expanduser("~/.pi/agent/sessions"),
+        )
+    )
+
+
+def iter_pi_session_files() -> list[Path]:
+    root = get_pi_session_root()
+    if not root.exists():
+        return []
+    return sorted(root.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def load_pi_session(path: Path) -> tuple[dict, list[dict]]:
+    header: dict = {}
+    entries: list[dict] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            entry = json.loads(line)
+            if entry.get("type") == "session":
+                header = entry
+            else:
+                entries.append(entry)
+    if not header:
+        raise RuntimeError(f"Pi session has no header: {path}")
+    return header, entries
+
+
+def resolve_pi_session(session_ref: str | None = None) -> Path:
+    if session_ref:
+        path = Path(os.path.expanduser(session_ref))
+        if path.exists():
+            return path
+
+    matches: list[Path] = []
+    for path in iter_pi_session_files():
+        try:
+            header, _ = load_pi_session(path)
+        except Exception:
+            continue
+
+        if not session_ref:
+            if header.get("cwd") == os.getcwd():
+                return path
+            matches.append(path)
+            continue
+
+        session_id = str(header.get("id", ""))
+        if session_id.startswith(session_ref) or session_ref in path.name:
+            matches.append(path)
+
+    if matches:
+        return matches[0]
+    raise RuntimeError(f"Pi session not found: {session_ref or os.getcwd()}")
+
+
+def content_to_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+
+    chunks = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "text":
+            chunks.append(part.get("text", ""))
+        elif part.get("type") == "toolCall":
+            chunks.append(f"[tool call: {part.get('name', 'unknown')}]")
+    return "".join(chunks)
+
+
+def get_pi_active_entries(entries: list[dict]) -> list[dict]:
+    by_id = {entry.get("id"): entry for entry in entries if entry.get("id")}
+    leaf = next((entry for entry in reversed(entries) if entry.get("id")), None)
+    if not leaf:
+        return []
+
+    active = []
+    seen = set()
+    while leaf and leaf.get("id") not in seen:
+        active.append(leaf)
+        seen.add(leaf.get("id"))
+        leaf = by_id.get(leaf.get("parentId"))
+    return list(reversed(active))
+
+
+def get_pi_session_title(header: dict, entries: list[dict]) -> str:
+    for entry in reversed(get_pi_active_entries(entries)):
+        if entry.get("type") == "session_info" and entry.get("name"):
+            return entry["name"]
+    for entry in get_pi_active_entries(entries):
+        if entry.get("type") != "message":
+            continue
+        message = entry.get("message", {})
+        if message.get("role") == "user":
+            title = content_to_text(message.get("content", "")).strip().splitlines()[0]
+            return title[:80] or "Untitled Pi Session"
+    return header.get("id", "Untitled Pi Session")
+
+
+def get_current_pi_session() -> dict:
+    path = resolve_pi_session()
+    header, entries = load_pi_session(path)
+    return {
+        "id": header["id"],
+        "title": get_pi_session_title(header, entries),
+        "path": str(path),
+        "source": "pi",
+    }
+
+
+def get_current_session() -> dict:
+    """Get current session info from pi when running under pi, else opencode."""
+    first, second = (
+        (get_current_pi_session, get_current_opencode_session)
+        if os.environ.get("PI_CODING_AGENT")
+        else (get_current_opencode_session, get_current_pi_session)
+    )
+    try:
+        return first()
+    except Exception as first_error:
+        try:
+            return second()
+        except Exception as second_error:
+            raise RuntimeError(f"{first_error}; {second_error}")
 
 
 def get_model():
@@ -175,7 +311,7 @@ def init_db(db_path: str):
     print(f"Database initialized: {db_path}")
 
 
-def export_session(session_id: str) -> str:
+def export_opencode_session(session_id: str) -> str:
     """Export session from opencode and extract conversation text."""
     # Export directly to temp file (avoids pipe buffering and encoding issues)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
@@ -214,6 +350,46 @@ def export_session(session_id: str) -> str:
     finally:
         if os.path.exists(temp_path):
             os.unlink(temp_path)
+
+
+def export_pi_session(session_ref: str) -> str:
+    path = resolve_pi_session(session_ref)
+    _header, entries = load_pi_session(path)
+    entries = get_pi_active_entries(entries)
+    if not entries:
+        raise RuntimeError("Session has no messages")
+
+    lines = []
+    for entry in entries:
+        kind = entry.get("type")
+        if kind == "message":
+            message = entry.get("message", {})
+            role = str(message.get("role", "unknown")).upper()
+            text = content_to_text(message.get("content", ""))
+            if text:
+                lines.append(f"{role}: {text}")
+        elif kind in {"compaction", "branch_summary"}:
+            text = entry.get("summary", "")
+            if text:
+                lines.append(f"SUMMARY: {text}")
+    return "\n".join(lines)
+
+
+def export_session(session_id: str) -> str:
+    """Export session from pi or opencode and extract conversation text."""
+    try_pi_first = os.environ.get("PI_CODING_AGENT") or session_id.endswith(".jsonl")
+    exporters = (
+        (export_pi_session, export_opencode_session)
+        if try_pi_first
+        else (export_opencode_session, export_pi_session)
+    )
+    try:
+        return exporters[0](session_id)
+    except Exception as first_error:
+        try:
+            return exporters[1](session_id)
+        except Exception as second_error:
+            raise RuntimeError(f"{first_error}; {second_error}")
 
 
 def save_memory(

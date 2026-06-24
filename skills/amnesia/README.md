@@ -1,6 +1,6 @@
 # Amnesia
 
-A dead-simple memory system for AI coding assistants. **One Python script, zero config.**
+A dead-simple memory system for AI coding assistants. **One Python script, zero config.** Supports opencode and pi sessions.
 
 ## Quick Install
 
@@ -53,11 +53,11 @@ echo "Summary of what we did..." | ~/.config/opencode/skills/amnesia/save.py sav
 ## How It Works
 
 ```
-Save: /sum → save.py → opencode export → SQLite + embeddings
+Save: /sum → save.py → opencode export or pi JSONL → SQLite + embeddings
 Query: "remember..." → save.py query → semantic search → results
 ```
 
-The full conversation is automatically extracted from the opencode session - you only provide the summary.
+The full conversation is automatically extracted from the opencode or pi session - you only provide the summary.
 
 ## Database
 
@@ -104,4 +104,4 @@ amnesia/
 ## Dependencies
 
 - **Required**: [uv](https://github.com/astral-sh/uv) (manages Python dependencies automatically)
-- **Required**: opencode CLI (for session export)
+- **Required for opencode saves**: opencode CLI (for session export)
