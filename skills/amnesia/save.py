@@ -360,18 +360,29 @@ def export_pi_session(session_ref: str) -> str:
         raise RuntimeError("Session has no messages")
 
     lines = []
+    drop_following_assistants = False
     for entry in entries:
         kind = entry.get("type")
+        role = ""
+        text = ""
         if kind == "message":
             message = entry.get("message", {})
             role = str(message.get("role", "unknown")).upper()
             text = content_to_text(message.get("content", ""))
-            if text:
-                lines.append(f"{role}: {text}")
         elif kind in {"compaction", "branch_summary"}:
+            role = "SUMMARY"
             text = entry.get("summary", "")
-            if text:
-                lines.append(f"SUMMARY: {text}")
+
+        if drop_following_assistants and role == "ASSISTANT":
+            continue
+        drop_following_assistants = False
+
+        if any(marker in text for marker in SUM_COMMAND_MARKERS):
+            drop_following_assistants = True
+            continue
+
+        if text:
+            lines.append(f"{role}: {text}")
     return "\n".join(lines)
 
 
