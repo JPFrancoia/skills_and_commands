@@ -100,6 +100,8 @@ modernises them.
   abstraction, unnecessary interfaces, wrapper types wrapping a single field.
 - **Low indirection by default.** Prefer concrete types and direct calls unless
   the abstraction has an immediate, visible reason to exist.
+- **No thin aliases or abstractions.** Accept aliases/helpers/wrappers only when
+  they remove real duplication or clarify a real boundary.
 - **Standard library over third-party.** If the stdlib can do it, prefer that.
 - **Not pedantic about formatting.** `golines` + `gofmt` handle that. Don't
   flag whitespace or import ordering.
@@ -251,6 +253,8 @@ context, missing `defer tx.Rollback()`.
 
 - `stretchr/testify`: `assert` (non-fatal) + `require` (fatal).
 - Same package (white-box). No mocks, no mock generation.
+- Keep test-only helpers in `_test.go` unless an existing multi-file test suite
+  already uses a shared `test_utils.go` pattern.
 - `TestMain` for DB setup. `t.Cleanup()` for teardown.
 - **Every test must have a doc comment.**
 - HTTP tests: `httptest.NewRequest` + `httptest.NewRecorder`.

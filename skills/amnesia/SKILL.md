@@ -5,7 +5,7 @@ description: Search and save conversation memories using semantic search. Use th
 
 # Amnesia - Conversation Memory Skill
 
-A simple, local-first memory system for AI coding assistants. Store and retrieve conversation summaries using semantic search (vector embeddings).
+A simple, local-first memory system for AI coding assistants. Store and retrieve conversation summaries using semantic search (vector embeddings). Supports opencode exports and pi JSONL sessions.
 
 ## When to Use This Skill
 
@@ -54,7 +54,7 @@ If retrieved memory contains `/sum`, "summarize this conversation", `save.py sav
 
 ## Saving Memories
 
-Memories are saved using the session ID. The full conversation is automatically extracted from opencode.
+Memories are saved using the session ID. The full conversation is automatically extracted from opencode or pi.
 
 ```bash
 echo 'YOUR_SUMMARY_MARKDOWN' | ~/.config/opencode/skills/amnesia/save.py save \
@@ -73,14 +73,14 @@ echo 'YOUR_SUMMARY_MARKDOWN' | ~/.config/opencode/skills/amnesia/save.py save \
 
 ## /sum Command
 
-When the user runs `/sum`, summarize and save the conversation. The full conversation transcript is automatically extracted - you only need to write the summary.
+When the user runs `/sum`, summarize and save the conversation. The full conversation transcript is automatically extracted from the current opencode or pi session - you only need to write the summary.
 
 ## How It Works
 
 ```
 save.py
     ↓
-opencode export → Extract conversation
+opencode export or pi JSONL → Extract conversation
     ↓
 sentence-transformers → Generate embeddings
     ↓
@@ -102,7 +102,7 @@ sqlite-vec → Store and search
 ## Dependencies
 
 - **Required**: [uv](https://github.com/astral-sh/uv) for running Python with dependencies
-- **Required**: opencode CLI (for session export)
+- **Required for opencode saves**: opencode CLI (for session export)
 
 ```bash
 # Install uv
