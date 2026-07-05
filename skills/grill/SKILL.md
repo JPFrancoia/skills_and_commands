@@ -24,6 +24,13 @@ Before asking plan questions, establish the active plan file:
 1. If the user names a plan file, use that file.
 2. Otherwise search `plans/` for the relevant plan.
 3. If no suitable plan exists, create `plans/<topic>-plan.md` with the standard plan sections from the user's agent instructions.
+4. Inventory the initial set of high-value unanswered questions discovered from the plan, docs, glossary, and code. Report only the count, not the full list, unless the user asks for it.
+
+Use this wording:
+
+> "I found N initial high-value questions. I'll ask them one at a time. This count may change if your answers reveal new ambiguity."
+
+Treat this as a live estimate, not a fixed queue.
 
 The active plan is the durable record for the discussion. Do not leave decisions only in chat.
 
@@ -61,6 +68,18 @@ Create files lazily - only when you have something to write. If no `docs/CONTEXT
 
 ## During the session
 
+### Ask exactly one question
+
+Ask one and only one question per turn. Do not bundle multiple decisions into one prompt.
+
+Each question must include:
+
+- `Progress`: the current question number and current estimate, such as `Question 1/6`.
+- `Question`: the single decision needed.
+- `Recommended answer`: the answer you recommend.
+- `Rationale`: why that answer is preferred, grounded in the plan, docs, glossary, code, or concrete scenarios.
+- `Capture target`: the plan section or `docs/CONTEXT.md` entry that will be updated if accepted.
+
 ### Challenge against the glossary
 
 When the user uses a term that conflicts with the existing language in `docs/CONTEXT.md`, call it out immediately. "Your glossary defines 'cancellation' as X, but you seem to mean Y - which is it?"
@@ -86,5 +105,12 @@ When a term is resolved, update `docs/CONTEXT.md` right there. Don't batch these
 ### Keep decisions in plans
 
 Implementation decisions, trade-offs, rejected alternatives, assumptions, and open questions belong in the active file under `plans/`.
+
+## Guardrails
+
+- Ask exactly one question at a time.
+- Estimate the initial number of high-value unanswered questions before asking the first question.
+- Include `Progress` with every grill question.
+- Always provide a recommended answer and rationale with each question.
 
 </supporting-info>
