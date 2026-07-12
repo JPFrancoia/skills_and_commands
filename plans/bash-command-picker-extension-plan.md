@@ -1,11 +1,11 @@
 # Bash command picker Pi extension plan
 
 Status: Implemented
-Date: 2026-07-09
+Date: 2026-07-10
 
 ## 1. Brief
 
-Build a small Pi extension that lets you copy one logical shell command from assistant `bash`/`sh`/`shell`/`zsh` code blocks without selecting terminal-rendered text. Pi's public extension API does not appear to support clickable controls inside the built-in assistant Markdown renderer, so the minimal working version will use a keyboard shortcut that opens a picker over commands extracted from the latest assistant response. This solves the copy problem without modifying assistant messages or polluting model context.
+Build a small Pi extension that lets you copy either one logical shell command or an entire assistant `bash`/`sh`/`shell`/`zsh` block without selecting terminal-rendered text. Pi's public extension API does not appear to support clickable controls inside the built-in assistant Markdown renderer, so the extension uses an `F2` picker over commands extracted from the active session branch. This solves both single-command reuse and whole-block terminal execution without modifying assistant messages or polluting model context.
 
 ## 2. Current state / relevant context
 
@@ -27,9 +27,10 @@ Behavior:
 1. On shortcut, inspect the current session branch.
 2. Find assistant messages, newest first.
 3. Extract fenced shell blocks with languages: `bash`, `sh`, `shell`, `zsh`.
-4. Split each block into logical commands.
-5. Show an overlay picker of commands with a one-line preview and optional full preview.
-6. Copy the selected command to the clipboard.
+4. Add a clearly labeled `COPY ENTIRE BLOCK` choice that preserves the fenced block verbatim and appends one final newline so its last command can execute when pasted.
+5. Split each block into logical commands and add the individual choices after its whole-block choice.
+6. Show an overlay picker with one-line previews and optional full previews.
+7. Copy the selected command or block to the clipboard.
 
 Trigger:
 
@@ -46,10 +47,10 @@ Logical command splitting rules for v1:
 
 UI:
 
-- Overlay title: `bash commands` plus count.
-- Rows: newest commands first, with source block language and short preview.
+- Overlay title: `bash commands & blocks` plus choice count.
+- Rows: newest blocks first; each block starts with an accent-colored `▣ COPY ENTIRE BLOCK (N commands)` choice followed by its individual commands.
 - Keys: up/down navigate, Enter copy, Space/Tab full preview, Esc cancel.
-- Status/notification after copy.
+- Footer and notification explicitly distinguish whole-block copying from single-command copying.
 
 ## 4. File-by-file impact
 
@@ -62,6 +63,8 @@ UI:
 - Shell parsing is hard. V1 deliberately supports common command shapes instead of a full shell AST.
 - Multi-line `if/for/while` blocks may split imperfectly unless line continuations or heredocs make boundaries obvious.
 - Clipboard support depends on Pi's `copyToClipboard()`, matching `/copy` behavior.
+- Whole blocks are not rewritten with `&&` or `set -e`; they retain the assistant's intended shell semantics and therefore continue after ordinary command failures unless the block itself says otherwise.
+- Terminal bracketed-paste settings may require one explicit Enter press; the copied block includes a final newline so all lines, including the last, are ready to execute.
 
 ## 6. Validation / testing
 
@@ -79,18 +82,21 @@ UI:
 - [x] Implement overlay picker component.
 - [x] Register `f2` shortcut.
 - [x] Smoke-test with TypeScript import/type syntax if a checker is available; otherwise run via `pi -e` instructions.
-- [x] Update this plan with actual validation result.
+- [x] Add a visually distinct whole-block choice for every shell block.
+- [x] Preserve whole-block content and append a final newline for terminal execution.
+- [x] Update this plan with actual validation results.
 
 Validation completed:
 
-- `tsc -p /tmp/pi-bash-command-picker-tsconfig.json`
+- `tsc -p /tmp/pi-bash-command-picker-tsconfig.json` (re-run after whole-block support)
 - Node parser self-check using a temporary test copy with package symlinks; verified simple commands, continuations, heredoc, and `if ... fi` grouping.
 
 ## 8. Open questions / assumptions
 
 - Assumption: a keyboard shortcut is acceptable as the commandless trigger because clickable inline icons are not exposed by Pi today.
-- Assumption: latest assistant responses are enough, but the implementation can scan all assistant messages in the active branch newest-first.
-- Open: preferred shortcut if `f2` conflicts with your terminal or Pi setup.
+- Assumption: latest assistant responses are enough, but the implementation scans all assistant messages in the active branch newest-first.
+- Decision: copy whole blocks unchanged rather than joining commands with `&&` or adding `set -e`; changing failure behavior would alter the assistant's command sequence.
+- Decision: append a final newline to whole-block clipboard text so the final command is executable as part of the paste.
 
 ## Grill option
 
