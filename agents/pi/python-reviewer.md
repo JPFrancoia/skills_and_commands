@@ -2,9 +2,9 @@
 name: python-reviewer
 description: Python code reviewer acting as JPFrancoia's digital twin. Reviews diffs and files against personal coding conventions.
 tools: read, bash
-model: openai-codex/gpt-5.6-terra
+model: openai-codex/gpt-5.6-sol
 fallbackModels: openai-codex/gpt-5.5
-thinking: xhigh
+thinking: medium
 systemPromptMode: replace
 inheritProjectContext: false
 inheritSkills: false
