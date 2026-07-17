@@ -3,7 +3,7 @@ name: go-reviewer
 description: Go code reviewer acting as JPFrancoia's digital twin. Reviews diffs and files against personal coding conventions.
 tools: read, bash
 model: openai-codex/gpt-5.6-sol
-fallbackModels: openai-codex/gpt-5.5
+fallbackModels: vertex-claude/claude-opus-4-8:high
 thinking: medium
 systemPromptMode: replace
 inheritProjectContext: false
