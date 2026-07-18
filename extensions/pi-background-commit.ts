@@ -82,15 +82,6 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const treeResult = await git(pi, repository, ["write-tree"]);
-			if (treeResult.code !== 0) {
-				notify(ctx, treeResult.stderr.trim() || "Could not snapshot the staged tree.", "error");
-				return;
-			}
-			const tree = treeResult.stdout.trim();
-
-			const headResult = await git(pi, repository, ["rev-parse", "--verify", "HEAD"]);
-			const head = headResult.code === 0 ? headResult.stdout.trim() : "UNBORN";
 			const requestId = `background-commit-${randomUUID()}`;
 			watchLaunchReply(pi, ctx, requestId, repository);
 
@@ -105,12 +96,7 @@ export default function (pi: ExtensionAPI) {
 					async: true,
 					clarify: false,
 					agentScope: "both",
-					task: [
-						"Commit the staged snapshot in the current repository now.",
-						`Expected HEAD: ${head}`,
-						`Expected staged tree: ${tree}`,
-						"Treat these values as immutable invocation guards and follow your contextual commit instructions.",
-					].join("\n"),
+					task: "Commit whatever is staged in the current repository when you run. Follow your contextual commit instructions.",
 				},
 				source: { extension: "pi-background-commit" },
 			});

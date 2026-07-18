@@ -1,8 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import backgroundCommit, { __test__ } from "./pi-background-commit.ts";
 
 const RPC_REQUEST = "subagents:rpc:v1:request";
@@ -58,45 +54,7 @@ function harness(results: Result[]): Harness {
 	};
 }
 
-function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): string {
-	return execFileSync("git", args, {
-		cwd,
-		encoding: "utf8",
-		env: { ...process.env, ...env },
-	}).trim();
-}
-
-function privateIndexSnapshotTest(): void {
-	const repository = mkdtempSync(join(tmpdir(), "pi-background-commit-"));
-	const snapshotIndex = join(repository, "snapshot.index");
-	try {
-		git(repository, ["init", "--quiet"]);
-		git(repository, ["config", "user.name", "Pi Test"]);
-		git(repository, ["config", "user.email", "pi@example.test"]);
-
-		writeFileSync(join(repository, "a.txt"), "base\n");
-		git(repository, ["add", "a.txt"]);
-		git(repository, ["commit", "--quiet", "-m", "base"]);
-
-		writeFileSync(join(repository, "a.txt"), "snapshot A\n");
-		git(repository, ["add", "a.txt"]);
-		const expectedTree = git(repository, ["write-tree"]);
-		git(repository, ["read-tree", expectedTree], { GIT_INDEX_FILE: snapshotIndex });
-
-		writeFileSync(join(repository, "b.txt"), "later B\n");
-		git(repository, ["add", "b.txt"]);
-		git(repository, ["commit", "--quiet", "-m", "snapshot A"], { GIT_INDEX_FILE: snapshotIndex });
-
-		assert.equal(git(repository, ["rev-parse", "HEAD^{tree}"]), expectedTree);
-		assert.deepEqual(git(repository, ["diff", "--cached", "--name-only"]).split("\n"), ["b.txt"]);
-		assert.doesNotMatch(git(repository, ["show", "--format=", "--name-only", "HEAD"]), /b\.txt/);
-	} finally {
-		rmSync(repository, { recursive: true, force: true });
-	}
-}
-
 async function main(): Promise<void> {
-	privateIndexSnapshotTest();
 	assert.equal(__test__.repoArgument(""), ".");
 	assert.equal(__test__.repoArgument("'nested repo'"), "nested repo");
 
@@ -116,8 +74,6 @@ async function main(): Promise<void> {
 	const staged = harness([
 		{ code: 0, stdout: "/work/enterprise\n", stderr: "" },
 		{ code: 1, stdout: "", stderr: "" },
-		{ code: 0, stdout: "tree123\n", stderr: "" },
-		{ code: 0, stdout: "head123\n", stderr: "" },
 	]);
 	await staged.handler("enterprise", staged.ctx);
 	const request = staged.emitted() as {
@@ -129,8 +85,8 @@ async function main(): Promise<void> {
 		[request.params.agent, request.params.async, request.params.context, request.params.cwd],
 		["contextual-committer", true, "fork", "/work/enterprise"],
 	);
-	assert.match(request.params.task, /Expected HEAD: head123/);
-	assert.match(request.params.task, /Expected staged tree: tree123/);
+	assert.match(request.params.task, /Commit whatever is staged/);
+	assert.doesNotMatch(request.params.task, /Expected HEAD|Expected staged tree/);
 }
 
 await main();
