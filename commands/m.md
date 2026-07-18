@@ -25,12 +25,13 @@ Use the `subagent` tool to launch `contextual-committer` with:
 - `cwd`: the resolved Git root;
 - `context`: `fork`;
 - `async`: `true`;
-- task text telling the agent to commit the index it sees when it runs.
+- task text containing the resolved Git root and telling the agent to use `git -C` with that exact path.
 
 The task should be:
 
 ```text
-Commit whatever is staged in the current repository when you run. Follow your contextual commit instructions.
+Target repository: <resolved-git-root>
+Commit whatever is staged there when you run. Use git -C with that exact path for every Git command. Follow your contextual commit instructions.
 ```
 
 Do not wait for completion. Report only that the background run started; Pi will deliver its completion notification.

@@ -96,7 +96,7 @@ export default function (pi: ExtensionAPI) {
 					async: true,
 					clarify: false,
 					agentScope: "both",
-					task: "Commit whatever is staged in the current repository when you run. Follow your contextual commit instructions.",
+					task: `Target repository: ${repository}\nCommit whatever is staged there when you run. Use git -C with that exact path for every Git command. Follow your contextual commit instructions.`,
 				},
 				source: { extension: "pi-background-commit" },
 			});

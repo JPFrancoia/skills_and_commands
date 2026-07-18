@@ -14,6 +14,7 @@ Keep `/m [repo-path]` asynchronous, but make the commit behavior deliberately si
 - A live run captured HEAD `89db810…`; another background commit advanced the branch to `5579f531…`; the child aborted solely because HEAD differed.
 - The user explicitly prefers live-index behavior over snapshot isolation: commit what is staged when the child runs.
 - A forked subagent still inherits the conversation needed for contextual commit reasoning.
+- `/m infra` correctly resolved and recorded the infra repository, but forked child sessions restored the parent session CWD. The child therefore ran plain `git` commands in the workspace root.
 
 ## 3. Proposed implementation
 
@@ -22,9 +23,9 @@ Keep `/m [repo-path]` asynchronous, but make the commit behavior deliberately si
     │
     ├─ resolve the repository
     ├─ confirm something is staged now
-    └─ start contextual-committer asynchronously
+    └─ start contextual-committer asynchronously with the resolved Git root
              │
-             ├─ inspect the staged diff when it runs
+             ├─ inspect the staged diff with git -C <resolved-root>
              ├─ no-op if the index is empty
              ├─ compose the contextual message
              └─ run normal git commit
@@ -34,11 +35,12 @@ Keep `/m [repo-path]` asynchronous, but make the commit behavior deliberately si
 
 - Keep repository resolution, staged-change preflight, async launch, and notifications.
 - Stop capturing `git write-tree` and HEAD.
-- Tell the child only to commit whatever is staged when it runs.
+- Tell the child to commit whatever is staged when it runs and include the resolved Git root explicitly.
 
 ### Commit agent
 
-- Inspect only `git diff --cached` and its stat.
+- Use `git -C "$TARGET_REPOSITORY"` for every Git command because forked session restoration can reset the process CWD to the parent workspace.
+- Inspect only the target repository's cached diff and stat.
 - Ignore unstaged and untracked files.
 - If nothing remains staged, report a successful no-op.
 - Run normal `git commit -F -` with hooks enabled.
@@ -64,6 +66,7 @@ The live index is the source of truth. This intentionally means changes staged a
 
 - **Later staging joins the commit:** accepted by explicit user decision; the child commits the index it sees.
 - **Another child commits first:** the later child reports a no-op if nothing remains staged.
+- **Forked CWD restoration:** accepted as Pi runtime behavior; the task carries the resolved Git root and the child uses `git -C`, so process CWD no longer selects the repository.
 - **Concurrent Git operations:** normal Git index/ref locking decides the result; the child reports failures without workarounds.
 - **Hooks:** remain enabled and may modify or reject the commit as usual.
 - **Unstaged/untracked files:** remain excluded because the agent never runs `git add`.
@@ -91,7 +94,10 @@ The live index is the source of truth. This intentionally means changes staged a
 - [x] Reject that option after the user chose live-index commits instead.
 - [x] Simplify the child agent, extension, test, and fallback command.
 - [x] Run focused validation.
-- [x] Mark this plan completed with results.
+- [x] Mark the live-index simplification completed with results.
+- [x] Trace `/m infra` metadata and confirm the extension resolved infra while the forked child restored the workspace-root CWD.
+- [x] Pass the resolved repository in the task and require `git -C` for every child Git command.
+- [x] Re-run focused validation and mark the target-path fix completed.
 
 ### Simplification validation results
 
@@ -99,6 +105,7 @@ The live index is the source of truth. This intentionally means changes staged a
 - Extension import: passed with `PI_OFFLINE=1 pi --no-extensions -e extensions/pi-background-commit.ts --list-models`.
 - TypeScript: passed strict `tsc --noEmit` for the extension and test using a temporary config and Pi's installed types.
 - Repository hygiene: `git diff --check` passed; exactly the five planned files changed.
+- Target-path regression: a forked `contextual-committer` whose session restored the workspace-root CWD successfully committed a staged file in `/tmp/pi-m-target-e2e` by using the explicit target path; the target index was clean afterward.
 
 ## 8. Open questions / assumptions
 

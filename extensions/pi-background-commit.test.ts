@@ -85,7 +85,8 @@ async function main(): Promise<void> {
 		[request.params.agent, request.params.async, request.params.context, request.params.cwd],
 		["contextual-committer", true, "fork", "/work/enterprise"],
 	);
-	assert.match(request.params.task, /Commit whatever is staged/);
+	assert.match(request.params.task, /Target repository: \/work\/enterprise/);
+	assert.match(request.params.task, /Use git -C with that exact path/);
 	assert.doesNotMatch(request.params.task, /Expected HEAD|Expected staged tree/);
 }
 
