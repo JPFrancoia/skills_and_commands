@@ -6,6 +6,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 const RPC_REQUEST = "subagents:rpc:v1:request";
@@ -83,6 +84,8 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const requestId = `background-commit-${randomUUID()}`;
+			const sessionFile = ctx.sessionManager.getSessionFile();
+			const context = sessionFile && existsSync(sessionFile) && ctx.sessionManager.getLeafId() ? "fork" : "fresh";
 			watchLaunchReply(pi, ctx, requestId, repository);
 
 			pi.events.emit(RPC_REQUEST, {
@@ -92,7 +95,7 @@ export default function (pi: ExtensionAPI) {
 				params: {
 					agent: "contextual-committer",
 					cwd: repository,
-					context: "fork",
+					context,
 					async: true,
 					clarify: false,
 					agentScope: "both",

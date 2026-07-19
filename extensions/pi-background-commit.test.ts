@@ -13,7 +13,7 @@ type Harness = {
 	notifications: string[];
 };
 
-function harness(results: Result[]): Harness {
+function harness(results: Result[], sessionFile = "/dev/null", leafId: string | null = "leaf-id"): Harness {
 	let handler: Harness["handler"] | undefined;
 	let emitted: unknown;
 	const listeners = new Map<string, (data: unknown) => void>();
@@ -47,6 +47,10 @@ function harness(results: Result[]): Harness {
 		ctx: {
 			cwd: "/work",
 			hasUI: true,
+			sessionManager: {
+				getSessionFile: () => sessionFile,
+				getLeafId: () => leafId,
+			},
 			ui: { notify: (message: string) => notifications.push(message) },
 		},
 		emitted: () => emitted,
@@ -88,6 +92,20 @@ async function main(): Promise<void> {
 	assert.match(request.params.task, /Target repository: \/work\/enterprise/);
 	assert.match(request.params.task, /Use git -C with that exact path/);
 	assert.doesNotMatch(request.params.task, /Expected HEAD|Expected staged tree/);
+
+	const emptySession = harness([
+		{ code: 0, stdout: "/work/enterprise\n", stderr: "" },
+		{ code: 1, stdout: "", stderr: "" },
+	], "/work/missing-session.jsonl");
+	await emptySession.handler("enterprise", emptySession.ctx);
+	assert.equal((emptySession.emitted() as { params: { context: string } }).params.context, "fresh");
+
+	const emptyHistory = harness([
+		{ code: 0, stdout: "/work/enterprise\n", stderr: "" },
+		{ code: 1, stdout: "", stderr: "" },
+	], "/dev/null", null);
+	await emptyHistory.handler("enterprise", emptyHistory.ctx);
+	assert.equal((emptyHistory.emitted() as { params: { context: string } }).params.context, "fresh");
 }
 
 await main();
