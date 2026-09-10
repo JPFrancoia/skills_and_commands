@@ -1,6 +1,6 @@
 # Amnesia
 
-A dead-simple memory system for AI coding assistants. **One Python script, zero config.** Supports opencode and pi sessions.
+A small local memory system for Pi. **One Python script, zero configuration.**
 
 ## Quick Install
 
@@ -8,11 +8,11 @@ A dead-simple memory system for AI coding assistants. **One Python script, zero 
 # Install uv (required)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Clone directly to your skills folder
-git clone https://github.com/youruser/amnesia.git ~/.config/opencode/skills/amnesia
+# Clone directly to your Pi skills folder
+git clone https://github.com/youruser/amnesia.git ~/.pi/agent/skills/amnesia
 
 # Make scripts executable
-chmod +x ~/.config/opencode/skills/amnesia/*.py ~/.config/opencode/skills/amnesia/*.sh
+chmod +x ~/.pi/agent/skills/amnesia/*.py ~/.pi/agent/skills/amnesia/*.sh
 ```
 
 The database is created automatically on first use (pass `--init`).
@@ -36,15 +36,15 @@ Or save the conversation:
 ### Command Line
 
 ```bash
-# Initialize database
-~/.config/opencode/skills/amnesia/save.py init
+# Initialize the database
+~/.pi/agent/skills/amnesia/save.py init
 
 # Search memories
-~/.config/opencode/skills/amnesia/save.py query "authentication bug"
-~/.config/opencode/skills/amnesia/save.py query "docker networking" --limit 10
+~/.pi/agent/skills/amnesia/save.py query "authentication bug"
+~/.pi/agent/skills/amnesia/save.py query "docker networking" --limit 10
 
-# Save a memory (full conversation is extracted automatically from session)
-echo "Summary of what we did..." | ~/.config/opencode/skills/amnesia/save.py save \
+# Save a memory and extract the current Pi conversation
+echo "Summary of what we did..." | ~/.pi/agent/skills/amnesia/save.py save \
     --id "ses_abc123" \
     --title "Auth Fix" \
     --tags "auth,bug"
@@ -53,11 +53,11 @@ echo "Summary of what we did..." | ~/.config/opencode/skills/amnesia/save.py sav
 ## How It Works
 
 ```
-Save: /sum → save.py → opencode export or pi JSONL → SQLite + embeddings
+Save: /sum → save.py → Pi JSONL → SQLite + embeddings
 Query: "remember..." → save.py query → semantic search → results
 ```
 
-The full conversation is automatically extracted from the opencode or pi session - you only provide the summary.
+The script extracts the full conversation from the Pi session. You provide only the summary.
 
 ## Database
 
@@ -104,4 +104,3 @@ amnesia/
 ## Dependencies
 
 - **Required**: [uv](https://github.com/astral-sh/uv) (manages Python dependencies automatically)
-- **Required for opencode saves**: opencode CLI (for session export)

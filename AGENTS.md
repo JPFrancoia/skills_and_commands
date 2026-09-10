@@ -2,14 +2,13 @@
 
 ## Purpose
 
-This repository stores reusable AI-agent configuration: agent definitions, prompt commands, Pi extensions, implementation plans, plugins, and skills. Keep changes portable and narrowly scoped; do not modify a user's live `~/.pi` or `~/.config/opencode` setup unless the task explicitly asks for installation.
+This repository stores reusable Pi configuration: agent definitions, prompt commands, extensions, implementation plans, and skills. Keep changes portable and narrowly scoped. Do not modify a user's live `~/.pi` setup unless the task explicitly asks for installation.
 
 ## Layout
 
-- `agents/`: agent definitions grouped by host (`pi/`, `opencode/`).
+- `agents/pi/`: Pi agent definitions.
 - `commands/`: reusable Markdown prompt commands.
 - `extensions/`: Pi TypeScript extensions and adjacent `*.test.ts` files.
-- `plugins/`: JavaScript plugins for supported agent hosts.
 - `skills/`: self-contained skills. Each skill's entry point is `SKILL.md`; scripts and references stay inside that skill directory.
 - `plans/`: implementation plans and completed decision records. Never delete completed plans.
 

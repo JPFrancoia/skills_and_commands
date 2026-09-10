@@ -35,7 +35,7 @@ Summarize this conversation and save it to memory.
 4. **Save** by piping your summary to this command:
 
 ```bash
-cat << 'EOF' | ~/.config/opencode/skills/amnesia/save.py save --tags "tag1,tag2,tag3"
+cat << 'EOF' | ~/.pi/agent/skills/amnesia/save.py save --tags "tag1,tag2,tag3"
 YOUR_SUMMARY_HERE
 EOF
 ```

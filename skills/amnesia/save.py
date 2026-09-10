@@ -16,16 +16,14 @@ Commands:
     save.py init
 """
 
-import sys
-import os
-import json
-import sqlite3
 import argparse
-import subprocess
-import tempfile
 import contextlib
 import io
+import json
 import logging
+import os
+import sqlite3
+import sys
 import warnings
 from pathlib import Path
 
@@ -33,25 +31,6 @@ from pathlib import Path
 _model = None
 
 SUM_COMMAND_MARKERS = ("<amnesia_sum_command>", "</amnesia_sum_command>")
-
-
-def get_current_opencode_session() -> dict:
-    """Get the current session info from opencode."""
-    result = subprocess.run(
-        ["opencode", "session", "list", "--format", "json", "-n", "1"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to get session list: {result.stderr}")
-
-    try:
-        sessions = json.loads(result.stdout)
-        if not sessions:
-            raise RuntimeError("No sessions found")
-        return sessions[0]
-    except (json.JSONDecodeError, KeyError, IndexError) as e:
-        raise RuntimeError(f"Failed to parse session list: {e}")
 
 
 def get_pi_session_root() -> Path:
@@ -173,22 +152,6 @@ def get_current_pi_session() -> dict:
     }
 
 
-def get_current_session() -> dict:
-    """Get current session info from pi when running under pi, else opencode."""
-    first, second = (
-        (get_current_pi_session, get_current_opencode_session)
-        if os.environ.get("PI_CODING_AGENT")
-        else (get_current_opencode_session, get_current_pi_session)
-    )
-    try:
-        return first()
-    except Exception as first_error:
-        try:
-            return second()
-        except Exception as second_error:
-            raise RuntimeError(f"{first_error}; {second_error}")
-
-
 def get_model():
     """Lazy load the embedding model."""
     global _model
@@ -243,31 +206,6 @@ def get_embedding(text: str) -> list[float]:
     return embedding.tolist()
 
 
-def get_message_text(msg: dict) -> str:
-    parts = msg.get("parts", [])
-    return "".join(p.get("text", "") for p in parts if p.get("type") == "text")
-
-
-def filter_sum_command_messages(messages: list[dict]) -> list[dict]:
-    filtered = []
-    drop_following_assistants = False
-
-    for msg in messages:
-        role = msg.get("info", {}).get("role", "unknown")
-
-        if drop_following_assistants and role == "assistant":
-            continue
-        drop_following_assistants = False
-
-        if any(marker in get_message_text(msg) for marker in SUM_COMMAND_MARKERS):
-            drop_following_assistants = True
-            continue
-
-        filtered.append(msg)
-
-    return filtered
-
-
 def init_db(db_path: str):
     """Initialize the database and vector table."""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -311,47 +249,6 @@ def init_db(db_path: str):
     print(f"Database initialized: {db_path}")
 
 
-def export_opencode_session(session_id: str) -> str:
-    """Export session from opencode and extract conversation text."""
-    # Export directly to temp file (avoids pipe buffering and encoding issues)
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        temp_path = f.name
-
-    try:
-        with open(temp_path, "w") as f:
-            result = subprocess.run(
-                ["opencode", "export", session_id],
-                stdout=f,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to export session: {result.stderr}")
-
-        # Parse and process
-        with open(temp_path, "r") as f:
-            data = json.load(f)
-
-        messages = data.get("messages", [])
-        if not messages:
-            raise RuntimeError("Session has no messages")
-
-        messages = filter_sum_command_messages(messages)
-
-        # Format as USER:/ASSISTANT: pairs
-        lines = []
-        for msg in messages:
-            role = msg.get("info", {}).get("role", "unknown").upper()
-            text = get_message_text(msg)
-            lines.append(f"{role}: {text}")
-
-        return "\n".join(lines)
-
-    finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
-
-
 def export_pi_session(session_ref: str) -> str:
     path = resolve_pi_session(session_ref)
     _header, entries = load_pi_session(path)
@@ -384,23 +281,6 @@ def export_pi_session(session_ref: str) -> str:
         if text:
             lines.append(f"{role}: {text}")
     return "\n".join(lines)
-
-
-def export_session(session_id: str) -> str:
-    """Export session from pi or opencode and extract conversation text."""
-    try_pi_first = os.environ.get("PI_CODING_AGENT") or session_id.endswith(".jsonl")
-    exporters = (
-        (export_pi_session, export_opencode_session)
-        if try_pi_first
-        else (export_opencode_session, export_pi_session)
-    )
-    try:
-        return exporters[0](session_id)
-    except Exception as first_error:
-        try:
-            return exporters[1](session_id)
-        except Exception as second_error:
-            raise RuntimeError(f"{first_error}; {second_error}")
 
 
 def save_memory(
@@ -533,7 +413,7 @@ def main():
     )
 
     # init command
-    init_parser = subparsers.add_parser("init", help="Initialize the database")
+    subparsers.add_parser("init", help="Initialize the database")
 
     args = parser.parse_args()
     db_path = get_db_path()
@@ -556,7 +436,7 @@ def main():
         title = args.title
         if not session_id or not title:
             try:
-                session = get_current_session()
+                session = get_current_pi_session()
                 if not session_id:
                     session_id = session["id"]
                 if not title:
@@ -578,7 +458,7 @@ def main():
 
         # Export session
         try:
-            full_content = export_session(session_id)
+            full_content = export_pi_session(session_id)
         except Exception as e:
             print(f"Error exporting session: {e}", file=sys.stderr)
             sys.exit(1)

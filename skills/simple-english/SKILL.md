@@ -11,7 +11,7 @@ description: |
   well. Enforces the standard's 53 rules: 20/25-word sentence limits, one word
   one meaning, simple tenses, active voice, condition before command.
 license: MIT
-compatibility: claude-code cursor codex gemini-cli opencode
+compatibility: claude-code cursor codex gemini-cli pi
 metadata:
   standard: ASD-STE100 Issue 9 (2025-01-15)
 ---

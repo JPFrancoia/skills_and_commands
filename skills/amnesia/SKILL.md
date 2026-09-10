@@ -5,7 +5,7 @@ description: Search and save conversation memories using semantic search. Use th
 
 # Amnesia - Conversation Memory Skill
 
-A simple, local-first memory system for AI coding assistants. Store and retrieve conversation summaries using semantic search (vector embeddings). Supports opencode exports and pi JSONL sessions.
+A simple, local-first memory system for Pi. Store and retrieve conversation summaries with semantic search and Pi JSONL sessions.
 
 ## When to Use This Skill
 
@@ -19,7 +19,7 @@ Invoke this skill when:
 ## Querying Memories
 
 ```bash
-~/.config/opencode/skills/amnesia/save.py query "search terms" [--limit N] [--full]
+~/.pi/agent/skills/amnesia/save.py query "search terms" [--limit N] [--full]
 ```
 
 ### Query Parameters
@@ -45,19 +45,19 @@ If retrieved memory contains `/sum`, "summarize this conversation", `save.py sav
 
 ```bash
 # Semantic search - finds by meaning
-~/.config/opencode/skills/amnesia/save.py query "container networking"
-~/.config/opencode/skills/amnesia/save.py query "login flow"
+~/.pi/agent/skills/amnesia/save.py query "container networking"
+~/.pi/agent/skills/amnesia/save.py query "login flow"
 
 # More results
-~/.config/opencode/skills/amnesia/save.py query "authentication" --limit 10
+~/.pi/agent/skills/amnesia/save.py query "authentication" --limit 10
 ```
 
 ## Saving Memories
 
-Memories are saved using the session ID. The full conversation is automatically extracted from opencode or pi.
+Memories use the Pi session ID. The script extracts the full conversation from the Pi JSONL file.
 
 ```bash
-echo 'YOUR_SUMMARY_MARKDOWN' | ~/.config/opencode/skills/amnesia/save.py save \
+echo 'YOUR_SUMMARY_MARKDOWN' | ~/.pi/agent/skills/amnesia/save.py save \
     --id "SESSION_ID" \
     --title "Title" \
     --tags "tag1,tag2"
@@ -73,14 +73,14 @@ echo 'YOUR_SUMMARY_MARKDOWN' | ~/.config/opencode/skills/amnesia/save.py save \
 
 ## /sum Command
 
-When the user runs `/sum`, summarize and save the conversation. The full conversation transcript is automatically extracted from the current opencode or pi session - you only need to write the summary.
+When the user runs `/sum`, summarize and save the conversation. The script extracts the transcript from the current Pi session.
 
 ## How It Works
 
 ```
 save.py
     ↓
-opencode export or pi JSONL → Extract conversation
+Pi JSONL → Extract conversation
     ↓
 sentence-transformers → Generate embeddings
     ↓
@@ -102,7 +102,6 @@ sqlite-vec → Store and search
 ## Dependencies
 
 - **Required**: [uv](https://github.com/astral-sh/uv) for running Python with dependencies
-- **Required for opencode saves**: opencode CLI (for session export)
 
 ```bash
 # Install uv
