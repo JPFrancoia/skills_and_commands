@@ -1,7 +1,7 @@
 ---
 name: contextual-committer
 description: Commit the target repository's currently staged changes with a contextual commit message.
-tools: bash
+tools: read, bash
 model: openai-codex/gpt-5.6-luna
 fallbackModels: vertex-claude/claude-opus-5:high
 thinking: medium

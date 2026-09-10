@@ -1,7 +1,8 @@
 # Repair Subagent Wrapped Tools Plan
 
-**Status:** Proposed
+**Status:** Completed
 **Created:** 2026-09-10
+**Completed:** 2026-09-10
 
 ## Brief
 
@@ -80,7 +81,7 @@ Then use a fresh Pi process to run the same background workflow. Verify these re
 - `contextual-committer` creates one commit from the staged cleanup.
 - The committed paths match the staged cleanup.
 - The repository keeps the unrelated agent edits unstaged.
-- The final workflow status is `completed`.
+- The final workflow state is `complete`.
 
 If validation fails, restore `npm:pi-subagents` and report the exact installation or workflow failure.
 
@@ -91,19 +92,35 @@ If validation fails, restore `npm:pi-subagents` and report the exact installatio
 - [x] Trace the failure to `getHostBuiltinToolNames()`.
 - [x] Confirm that `pi-tool-display` wraps active Pi core tools.
 - [x] Locate the official upstream fix and regression test.
-- [ ] Run the focused upstream test.
-- [ ] Install the pinned upstream Git package.
-- [ ] Verify the installed package source and commit.
-- [ ] Reload Pi through a fresh process.
-- [ ] Re-run the background contextual commit workflow.
-- [ ] Verify the commit and repository state.
-- [ ] Record validation results.
-- [ ] Mark this plan completed with the completion date.
+- [x] Run the focused upstream test.
+- [x] Install the pinned upstream Git package.
+- [x] Verify the installed package source and commit.
+- [x] Reload Pi through a fresh process.
+- [x] Re-run the background contextual commit workflow.
+- [x] Verify the commit and repository state.
+- [x] Record validation results.
+- [x] Mark this plan completed with the completion date.
 
 ## Open questions / assumptions
 
 - The user approved a runtime repair instead of a self-contained committer workaround.
 - The official upstream commit is an acceptable temporary pin until a later npm release contains the fix.
-- The current staged cleanup remains the only content for the first contextual commit retry.
+- The contextual committer uses the live index at child start. The repair plan entered that index before the successful retry.
 - A fresh Pi process can validate the same governed background workflow after installation.
 - No repository documentation change is necessary because this repair changes the local Pi package source only.
+
+## Validation results
+
+- The upstream wrapped-core regression test passed at commit `d9864f8`.
+- `pi install` pinned the official Git source at the full approved commit.
+- `pi list` reports only the pinned Git source for `pi-subagents`.
+- A fresh Pi process loaded `subagent` from the pinned Git package.
+- The fresh process still saw `read` and `bash` through `pi-tool-display` wrappers.
+- A print-mode `/m` smoke run stopped as the ephemeral parent session closed. It created no child and changed no Git state.
+- RPC mode kept the fresh parent session active for the asynchronous retry.
+- Workflow `47740e40-36d0-4c18-9117-3be5589f1a52` completed with child `f8b4ac21-7411-4fc9-be8f-b404aeb36dd7`.
+- The child loaded the contextual commit skill through `read` and created commit `886e4c1`.
+- The commit removed OpenCode support and kept the four pre-existing Pi agent edits unstaged.
+- The live index contained this repair plan when the child inspected it, so the cleanup commit also included the proposed plan version.
+- The RPC validation script expected state `completed`, but the runtime stored state `complete`. The script timed out after the successful commit.
+- The state-name mismatch affected only the one-off validation script. The workflow receipt and child result both report success.
