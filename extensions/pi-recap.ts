@@ -78,8 +78,12 @@ function normalizeSummary(value: unknown): ConversationSummary | null {
 }
 
 function parseSummary(text: string): ConversationSummary | null {
+  // Some models wrap JSON in a markdown fence or prose. Take the outermost object.
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
   try {
-    return normalizeSummary(JSON.parse(text));
+    return normalizeSummary(JSON.parse(text.slice(start, end + 1)));
   } catch {
     return null;
   }
