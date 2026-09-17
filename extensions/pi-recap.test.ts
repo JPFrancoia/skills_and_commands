@@ -46,6 +46,12 @@ assert.deepEqual(clean, {
   last: "Inspected the failing request",
 });
 assert.equal(__test__.parseSummary('{"now":"Only one field"}'), null);
+assert.deepEqual(
+  __test__.parseSummary(
+    '```json\n{"now":"a","why":"b","last":"c"}\n```',
+  ),
+  { version: 1, now: "a", why: "b", last: "c" },
+);
 assert.deepEqual(__test__.parseModel("anthropic/claude-haiku-4-5"), {
   provider: "anthropic",
   id: "claude-haiku-4-5",
@@ -225,7 +231,11 @@ events.get("before_agent_start")?.(
   ctx,
 );
 assert.equal(requests.length, 1);
-assert.equal(requestedModels.at(-1), "openai-codex/gpt-5.6-luna");
+const configured = __test__.loadModel();
+assert.equal(
+  requestedModels.at(-1),
+  `${configured.provider}/${configured.id}`,
+);
 assert.equal(requests[0].reasoningEffort, "minimal");
 assert.equal(requests[0].timeoutMs, 10_000);
 assert.deepEqual(renderLatestWidget(), [
