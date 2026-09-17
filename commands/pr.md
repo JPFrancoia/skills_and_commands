@@ -37,7 +37,7 @@ The task should be:
 
 ```text
 Target repository: <resolved-git-root>
-Commit whatever is staged there, creating a meaningful branch first if HEAD is main or master. Use git -C with that exact path for every Git command. Push to origin, create or reuse the matching GitHub PR or GitLab MR, watch CI, and follow your pull-request instructions.
+The user directly invoked /pr. This is explicit current-session authority to commit the staged changes, push, create or reuse the matching GitHub PR or GitLab MR, and watch CI. Do not request confirmation. Create a meaningful branch first if HEAD is main or master. Use git -C with that exact path for every Git command. Follow your pull-request instructions.
 ```
 
 Do not wait for completion. Report only that the background run started; Pi will deliver its completion notification.

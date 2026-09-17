@@ -37,7 +37,7 @@ The task should be:
 
 ```text
 Target repository: <resolved-git-root>
-Commit whatever is staged there when you run. Use git -C with that exact path for every Git command. Follow your contextual commit instructions.
+The user directly invoked /m. This is explicit current-session authority to commit the staged changes. Do not request confirmation. Use git -C with that exact path for every Git command. Follow your contextual commit instructions.
 ```
 
 Do not wait for completion. Report only that the background run started; Pi will deliver its completion notification.

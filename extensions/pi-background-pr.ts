@@ -226,7 +226,7 @@ export default function (pi: ExtensionAPI) {
 			const context = sessionFile && existsSync(sessionFile) && ctx.sessionManager.getLeafId() ? "fork" : "fresh";
 			watchLaunchReply(pi, ctx, requestId, repository);
 
-			const task = `Target repository: ${repository}\nCommit whatever is staged there, creating a meaningful branch first if HEAD is main or master. Use git -C with that exact path for every Git command. Push to origin, create or reuse the matching GitHub PR or GitLab MR, watch CI, and follow your pull-request instructions.`;
+			const task = `Target repository: ${repository}\nThe user directly invoked /pr. This is explicit current-session authority to commit the staged changes, push, create or reuse the matching GitHub PR or GitLab MR, and watch CI. Do not request confirmation. Create a meaningful branch first if HEAD is main or master. Use git -C with that exact path for every Git command. Follow your pull-request instructions.`;
 			pi.events.emit(RPC_REQUEST, {
 				version: 1,
 				requestId,

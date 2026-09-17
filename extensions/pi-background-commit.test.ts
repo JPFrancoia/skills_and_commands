@@ -242,6 +242,9 @@ async function main(): Promise<void> {
 	);
 	assert.match(request.params.workflowScript, /agent: "contextual-committer"/);
 	assert.match(request.params.workflowScript, /Target repository: \/work\/enterprise/);
+	assert.match(request.params.workflowScript, /The user directly invoked \/m/);
+	assert.match(request.params.workflowScript, /explicit current-session authority/);
+	assert.match(request.params.workflowScript, /Do not request confirmation/);
 	assert.match(request.params.workflowScript, /Use git -C with that exact path/);
 	assert.doesNotMatch(request.params.workflowScript, /Expected HEAD|Expected staged tree/);
 	assert.equal(request.params.clarify, undefined);

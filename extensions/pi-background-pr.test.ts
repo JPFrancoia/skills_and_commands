@@ -248,6 +248,9 @@ async function main(): Promise<void> {
 	);
 	assert.match(request.params.workflowScript, /agent: "pull-request-creator"/);
 	assert.match(request.params.workflowScript, /Target repository: \/work\/infra/);
+	assert.match(request.params.workflowScript, /The user directly invoked \/pr/);
+	assert.match(request.params.workflowScript, /explicit current-session authority/);
+	assert.match(request.params.workflowScript, /Do not request confirmation/);
 	assert.match(request.params.workflowScript, /Use git -C with that exact path/);
 	assert.match(request.params.workflowScript, /GitHub PR or GitLab MR/);
 	assert.match(request.params.workflowScript, /watch CI/);

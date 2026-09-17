@@ -226,7 +226,7 @@ export default function (pi: ExtensionAPI) {
 			const context = sessionFile && existsSync(sessionFile) && ctx.sessionManager.getLeafId() ? "fork" : "fresh";
 			watchLaunchReply(pi, ctx, requestId, repository);
 
-			const task = `Target repository: ${repository}\nCommit whatever is staged there when you run. Use git -C with that exact path for every Git command. Follow your contextual commit instructions.`;
+			const task = `Target repository: ${repository}\nThe user directly invoked /m. This is explicit current-session authority to commit the staged changes. Do not request confirmation. Use git -C with that exact path for every Git command. Follow your contextual commit instructions.`;
 			pi.events.emit(RPC_REQUEST, {
 				version: 1,
 				requestId,

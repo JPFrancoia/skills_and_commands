@@ -30,4 +30,4 @@ Install only the extension versions of `/m` and `/pr` when using autocomplete. T
 
 ## Staged changes and workflow
 
-Both commands require staged changes in the selected repository and do not stage files for you. Choose one command for a staged index: use `/m` when you only want the commit, or `/pr` when you want the complete commit-and-pull-request workflow. Do not run `/m` and then `/pr` for the same changes, because `/pr` includes the commit step.
+Both commands require staged changes in the selected repository and do not stage files for you. Choose one command for a staged index: use `/m` when you only want the commit, or `/pr` when you want the complete commit-and-pull-request workflow. Invoking `/m` authorizes its commit. Invoking `/pr` authorizes its commit, push, PR/MR creation, and CI watch. Do not run `/m` and then `/pr` for the same changes, because `/pr` includes the commit step.
