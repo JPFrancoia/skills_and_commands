@@ -31,9 +31,19 @@ The extension keeps the upstream commands:
 /name-ai-config provider/model
 ```
 
-The selected naming model remains in `~/.pi/agent/extensions/pi-session-auto-rename.json`.
+Set the naming model in `~/.pi/agent/settings.json`:
 
-The default model is `anthropic/claude-haiku-4-5`. Configure authentication for the selected model or automatic naming will not run.
+```json
+"autoRename": {
+  "model": "anthropic/claude-haiku-4-5"
+}
+```
+
+Use the `provider/model-id` format. An absent or invalid value uses the default model, `anthropic/claude-haiku-4-5`. The extension reads the value at each session start.
+
+`/name-ai-config` changes the model for the current session only. It does not write `settings.json`. The extension does not read `~/.pi/agent/extensions/pi-session-auto-rename.json`.
+
+Configure authentication for the selected model or automatic naming will not run.
 
 ## Validation
 

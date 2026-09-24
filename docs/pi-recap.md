@@ -20,10 +20,10 @@ For an old session, the extension creates one bootstrap recap from bounded conte
 
 The default model is `openai-codex/gpt-5.6-luna`. Codex with a ChatGPT account no longer supports `gpt-5.4-mini` for these requests.
 
-Create `~/.pi/agent/extensions/pi-recap.json` to select another model:
+Add a `recap` section to `~/.pi/agent/settings.json` to select another model:
 
 ```json
-{
+"recap": {
   "model": "openai-codex/gpt-5.6-luna"
 }
 ```

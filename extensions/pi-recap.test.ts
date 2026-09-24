@@ -59,14 +59,17 @@ assert.deepEqual(__test__.parseModel("anthropic/claude-haiku-4-5"), {
 assert.equal(__test__.parseModel("invalid"), null);
 
 const configDir = mkdtempSync(join(tmpdir(), "pi-recap-"));
-const configPath = join(configDir, "config.json");
+const configPath = join(configDir, "settings.json");
 try {
-  writeFileSync(configPath, JSON.stringify({ model: "openai-codex/gpt-5.5" }));
+  writeFileSync(
+    configPath,
+    JSON.stringify({ recap: { model: "openai-codex/gpt-5.5" } }),
+  );
   assert.deepEqual(__test__.loadModel(configPath), {
     provider: "openai-codex",
     id: "gpt-5.5",
   });
-  writeFileSync(configPath, JSON.stringify({ model: "invalid" }));
+  writeFileSync(configPath, JSON.stringify({ recap: { model: "invalid" } }));
   assert.deepEqual(__test__.loadModel(configPath), {
     provider: "openai-codex",
     id: "gpt-5.6-luna",

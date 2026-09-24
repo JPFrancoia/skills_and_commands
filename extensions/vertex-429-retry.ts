@@ -6,6 +6,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // recoverable throttles never hit the backoff loop. This rewrites the errorMessage
 // so pi's retry pattern ("429"/"rate limit") matches and auto-retry kicks in.
 //
+// Matched on error text, not provider name: claude-gateway proxies Vertex and
+// forwards the same body, so a provider allowlist would silently miss it.
+//
 // ponytail: scoped to transient per-minute/per-model throttles. A genuine daily or
 // account quota (no "per_minute"/"per_base_model") is left non-retryable on purpose.
 const VERTEX_TRANSIENT_429 =
@@ -14,13 +17,10 @@ const TRANSIENT_HINT =
   /per_minute|per_base_model|requests_per|tokens_per/i;
 
 export default function (pi: ExtensionAPI) {
-  pi.on("message_end", (event, ctx) => {
+  pi.on("message_end", (event) => {
     const message = event.message;
     if (message.role !== "assistant") return;
     if (message.stopReason !== "error") return;
-
-    const provider = (message as any).provider ?? ctx.model?.provider ?? "";
-    if (!provider.includes("vertex")) return;
 
     const errorMessage = message.errorMessage ?? "";
     if (errorMessage.includes("[retryable-throttle]")) return; // idempotent

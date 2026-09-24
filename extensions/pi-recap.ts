@@ -11,13 +11,7 @@ import { stripTerminalSequences, Text } from "@earendil-works/pi-tui";
 
 const ENTRY_TYPE = "pi-recap";
 const WIDGET_KEY = "pi-recap";
-const CONFIG_FILE_PATH = join(
-  homedir(),
-  ".pi",
-  "agent",
-  "extensions",
-  "pi-recap.json",
-);
+const SETTINGS_PATH = join(homedir(), ".pi", "agent", "settings.json");
 const DEFAULT_MODEL = {
   provider: "openai-codex",
   id: "gpt-5.6-luna",
@@ -98,12 +92,12 @@ function parseModel(value: unknown): RecapModel | null {
   return provider && id ? { provider, id } : null;
 }
 
-function loadModel(path = CONFIG_FILE_PATH): RecapModel {
+function loadModel(path = SETTINGS_PATH): RecapModel {
   try {
-    const config = JSON.parse(readFileSync(path, "utf8")) as {
-      model?: unknown;
+    const settings = JSON.parse(readFileSync(path, "utf8")) as {
+      recap?: { model?: unknown } | null;
     };
-    return parseModel(config.model) ?? DEFAULT_MODEL;
+    return parseModel(settings.recap?.model) ?? DEFAULT_MODEL;
   } catch {
     return DEFAULT_MODEL;
   }
