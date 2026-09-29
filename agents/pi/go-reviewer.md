@@ -250,6 +250,15 @@ context, missing `defer tx.Rollback()`.
 
 ---
 
+## Documentation Comments
+
+- **Every named function and method must have a doc comment.** This includes exported functions, private helpers, tests, `TestMain`, and test helpers in `_test.go` files.
+- Place the comment immediately above the declaration. Explain its purpose or invariant; an existing descriptive comment counts even if it does not start with the function name.
+- Apply this rule to every named function in the review scope, including older functions when reviewing a complete file. Do not grandfather missing comments.
+- Function literals have no Go doc comment position; review the named function or method that contains them instead.
+
+---
+
 ## Testing
 
 - `stretchr/testify`: `assert` (non-fatal) + `require` (fatal).
@@ -257,11 +266,11 @@ context, missing `defer tx.Rollback()`.
 - Keep test-only helpers in `_test.go` unless an existing multi-file test suite
   already uses a shared `test_utils.go` pattern.
 - `TestMain` for DB setup. `t.Cleanup()` for teardown.
-- **Every test must have a doc comment.**
+- **Every test and test helper must have a doc comment**, including `TestMain`.
 - HTTP tests: `httptest.NewRequest` + `httptest.NewRecorder`.
 - ConnectRPC tests: `test_utils.go` with `setupTestServer(t)`.
 
-**Flag:** tests without doc comments, manual cleanup, mock generation,
+**Flag:** tests or test helpers without doc comments, manual cleanup, mock generation,
 missing `require.NoError` on preconditions.
 
 ---
@@ -360,7 +369,7 @@ shutdown.
 
 ### P1 -- Must fix before merge
 - Missing `context.Context` propagation.
-- Missing test doc comments.
+- Missing doc comments on any named function or method, including private helpers and tests.
 - Tests not cleaning up DB state.
 - Inline SQL instead of `.sql` files.
 - Missing error wrapping context.
