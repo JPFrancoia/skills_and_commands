@@ -239,21 +239,22 @@ async function main(): Promise<void> {
 	await staged.handler("infra", staged.ctx);
 	const request = staged.emitted() as {
 		method: string;
-		params: { async: boolean; context: string; cwd: string; workflowScript: string; clarify?: unknown; agent?: unknown; task?: unknown };
+		params: { async: boolean; context: string; cwd: string; script: string; clarify?: unknown; agent?: unknown; task?: unknown };
 	};
 	assert.equal(request.method, "spawn");
+	assert.equal(Object.hasOwn(request.params, "workflowScript"), false);
 	assert.deepEqual(
 		[request.params.async, request.params.context, request.params.cwd],
 		[true, "fork", "/work/infra"],
 	);
-	assert.match(request.params.workflowScript, /agent: "pull-request-creator"/);
-	assert.match(request.params.workflowScript, /Target repository: \/work\/infra/);
-	assert.match(request.params.workflowScript, /The user directly invoked \/pr/);
-	assert.match(request.params.workflowScript, /explicit current-session authority/);
-	assert.match(request.params.workflowScript, /Do not request confirmation/);
-	assert.match(request.params.workflowScript, /Use git -C with that exact path/);
-	assert.match(request.params.workflowScript, /GitHub PR or GitLab MR/);
-	assert.match(request.params.workflowScript, /watch CI/);
+	assert.match(request.params.script, /agent: "pull-request-creator"/);
+	assert.match(request.params.script, /Target repository: \/work\/infra/);
+	assert.match(request.params.script, /The user directly invoked \/pr/);
+	assert.match(request.params.script, /explicit current-session authority/);
+	assert.match(request.params.script, /Do not request confirmation/);
+	assert.match(request.params.script, /Use git -C with that exact path/);
+	assert.match(request.params.script, /GitHub PR or GitLab MR/);
+	assert.match(request.params.script, /watch CI/);
 	assert.equal(request.params.clarify, undefined);
 	assert.equal(request.params.agent, undefined);
 	assert.equal(request.params.task, undefined);

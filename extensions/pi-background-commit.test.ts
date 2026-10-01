@@ -233,20 +233,21 @@ async function main(): Promise<void> {
 	await staged.handler("enterprise", staged.ctx);
 	const request = staged.emitted() as {
 		method: string;
-		params: { async: boolean; context: string; cwd: string; workflowScript: string; clarify?: unknown; agent?: unknown; task?: unknown };
+		params: { async: boolean; context: string; cwd: string; script: string; clarify?: unknown; agent?: unknown; task?: unknown };
 	};
 	assert.equal(request.method, "spawn");
+	assert.equal(Object.hasOwn(request.params, "workflowScript"), false);
 	assert.deepEqual(
 		[request.params.async, request.params.context, request.params.cwd],
 		[true, "fork", "/work/enterprise"],
 	);
-	assert.match(request.params.workflowScript, /agent: "contextual-committer"/);
-	assert.match(request.params.workflowScript, /Target repository: \/work\/enterprise/);
-	assert.match(request.params.workflowScript, /The user directly invoked \/m/);
-	assert.match(request.params.workflowScript, /explicit current-session authority/);
-	assert.match(request.params.workflowScript, /Do not request confirmation/);
-	assert.match(request.params.workflowScript, /Use git -C with that exact path/);
-	assert.doesNotMatch(request.params.workflowScript, /Expected HEAD|Expected staged tree/);
+	assert.match(request.params.script, /agent: "contextual-committer"/);
+	assert.match(request.params.script, /Target repository: \/work\/enterprise/);
+	assert.match(request.params.script, /The user directly invoked \/m/);
+	assert.match(request.params.script, /explicit current-session authority/);
+	assert.match(request.params.script, /Do not request confirmation/);
+	assert.match(request.params.script, /Use git -C with that exact path/);
+	assert.doesNotMatch(request.params.script, /Expected HEAD|Expected staged tree/);
 	assert.equal(request.params.clarify, undefined);
 	assert.equal(request.params.agent, undefined);
 	assert.equal(request.params.task, undefined);

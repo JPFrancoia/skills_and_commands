@@ -236,7 +236,7 @@ export default function (pi: ExtensionAPI) {
 					context,
 					async: true,
 					agentScope: "both",
-					workflowScript: `return runs.run("main", { agent: "contextual-committer", task: ${JSON.stringify(task)} });`,
+					script: `return runs.run("main", { agent: "contextual-committer", task: ${JSON.stringify(task)} });`,
 				},
 				source: { extension: "pi-background-commit" },
 			});
