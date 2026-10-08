@@ -327,8 +327,10 @@ export default function piRecap(pi: ExtensionAPI): void {
     const controller = new AbortController();
     abortController = controller;
 
+    // streamSimple maps `reasoning` for each provider. complete() ignored the
+    // effort on Anthropic models, which then thought at high effort and hit maxTokens.
     void ctx.modelRegistry
-      .complete(
+      .streamSimple(
         model,
         {
           systemPrompt: SYSTEM_PROMPT,
@@ -337,13 +339,14 @@ export default function piRecap(pi: ExtensionAPI): void {
         {
           cacheRetention: "none",
           maxRetries: 0,
-          maxTokens: 180,
-          reasoningEffort: "minimal",
+          maxTokens: 512,
+          reasoning: "minimal",
           sessionId: randomUUID(),
           signal: controller.signal,
           timeoutMs: 10_000,
         },
       )
+      .result()
       .then((response) => {
         if (requestId !== currentRequestId) return;
         if (response.stopReason !== "stop") {

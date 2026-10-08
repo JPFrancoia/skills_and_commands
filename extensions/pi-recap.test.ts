@@ -169,7 +169,7 @@ const widgets: unknown[] = [];
 const requestedModels: string[] = [];
 const requests: Array<{
   context: { messages: Array<{ content: Array<{ text: string }> }> };
-  reasoningEffort?: string;
+  reasoning?: string;
   resolve: (message: AssistantMessage) => void;
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -192,18 +192,20 @@ const ctx = {
       return { provider, id };
     },
     hasConfiguredAuth: () => true,
-    complete: (
+    streamSimple: (
       _model: unknown,
       context: { messages: Array<{ content: Array<{ text: string }> }> },
       options: {
-        reasoningEffort?: string;
+        reasoning?: string;
         signal?: AbortSignal;
         timeoutMs?: number;
       },
-    ) =>
-      new Promise<AssistantMessage>((resolve) =>
-        requests.push({ context, resolve, ...options }),
-      ),
+    ) => ({
+      result: () =>
+        new Promise<AssistantMessage>((resolve) =>
+          requests.push({ context, resolve, ...options }),
+        ),
+    }),
   },
 } as unknown as ExtensionContext;
 
@@ -239,7 +241,7 @@ assert.equal(
   requestedModels.at(-1),
   `${configured.provider}/${configured.id}`,
 );
-assert.equal(requests[0].reasoningEffort, "minimal");
+assert.equal(requests[0].reasoning, "minimal");
 assert.equal(requests[0].timeoutMs, 10_000);
 assert.deepEqual(renderLatestWidget(), [
   "Now: Show updates while you work",
