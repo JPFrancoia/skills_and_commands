@@ -36,7 +36,7 @@ Run `/reload` after a model change. Pi recap warns when the selected model is un
 
 Each field has a 100-character limit. Each request contains at most 12,000 characters of conversation activity.
 
-The extension disables cache retention and retries. It uses minimal reasoning, a 512-token output cap, and a ten-second timeout. If a model does not support minimal reasoning, Pi uses the nearest level that it supports. For example, Claude Haiku 5.5 uses low effort.
+The extension disables cache retention and retries. It uses minimal reasoning, a 2048-token output cap, and a ten-second timeout. If a model does not support minimal reasoning, Pi uses the nearest level that it supports. For example, Claude Haiku 5.5 uses low effort. At low effort, Haiku 5.5 can still think on long transcripts, so the cap includes room for thinking tokens.
 
 The extension keeps the previous recap if the model fails or returns invalid JSON. It discards responses from an older turn or session.
 

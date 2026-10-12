@@ -329,6 +329,7 @@ export default function piRecap(pi: ExtensionAPI): void {
 
     // streamSimple maps `reasoning` for each provider. complete() ignored the
     // effort on Anthropic models, which then thought at high effort and hit maxTokens.
+    // Haiku 5.5 still thinks at low effort on long transcripts (up to ~730 tokens seen).
     void ctx.modelRegistry
       .streamSimple(
         model,
@@ -339,7 +340,7 @@ export default function piRecap(pi: ExtensionAPI): void {
         {
           cacheRetention: "none",
           maxRetries: 0,
-          maxTokens: 512,
+          maxTokens: 2048,
           reasoning: "minimal",
           sessionId: randomUUID(),
           signal: controller.signal,
