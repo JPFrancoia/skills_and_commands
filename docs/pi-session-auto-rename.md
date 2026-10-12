@@ -45,6 +45,8 @@ Use the `provider/model-id` format. An absent or invalid value uses the default 
 
 Configure authentication for the selected model or automatic naming will not run.
 
+The naming request uses minimal reasoning and a 512-token output cap. If a model does not support minimal reasoning, Pi uses the nearest level that it supports. For example, Claude Haiku 5.5 uses low effort.
+
 ## Validation
 
 Run the adjacent test after you change the extension:

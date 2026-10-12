@@ -1,4 +1,4 @@
-import { complete, type Api, type Model, type UserMessage } from "@earendil-works/pi-ai";
+import type { Api, Model, UserMessage } from "@earendil-works/pi-ai";
 import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Input, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
 import {
@@ -322,14 +322,17 @@ export default function autoSessionName(pi: ExtensionAPI) {
 				return null;
 			}
 
-			const auth = await getModelAuth(ctx, model);
-			if (!auth) return null;
+			if (!(await getModelAuth(ctx, model))) return null;
 
-			const response = await complete(
-				model,
-				{ systemPrompt: NAMING_SYSTEM_PROMPT, messages: [prompt] },
-				{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: 128 },
-			);
+			// streamSimple maps `reasoning` for each provider. complete() sent no effort, so
+			// Anthropic models thought at high effort and hit maxTokens before writing the name.
+			const response = await ctx.modelRegistry
+				.streamSimple(
+					model,
+					{ systemPrompt: NAMING_SYSTEM_PROMPT, messages: [prompt] },
+					{ maxTokens: 512, reasoning: "minimal" },
+				)
+				.result();
 			const responseDebug = `model=${model.provider}/${model.id} stopReason=${response.stopReason}${response.errorMessage ? ` error=${response.errorMessage}` : ""} content=${JSON.stringify(response.content)}`;
 
 			if (response.stopReason === "error") {
