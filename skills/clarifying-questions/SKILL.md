@@ -51,11 +51,11 @@ Provide no more than three authored options. Add `Give additional context` as th
 
 Use this description for that option:
 
-`Explain the situation and tradeoffs before asking me again.`
+`Explain the situation and tradeoffs in plain, simple English. Do not use jargon. If possible, use an example to show the problem. Then ask me again.`
 
 The questionnaire adds `Type something.` automatically. Do not author that reserved option.
 
-If the user selects `Give additional context`, explain the tradeoffs with a concrete example. Then ask the same decision again.
+If the user selects `Give additional context`, explain the situation and tradeoffs in plain, simple English without jargon. If possible, use a concrete example to show the problem. Then ask the same decision again.
 
 ## Use the available interface
 
