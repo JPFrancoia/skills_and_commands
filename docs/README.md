@@ -6,3 +6,4 @@
 - [Pi Jev router](pi-jev-router.md) — three-level Codex routing, limits, privacy, installation, and validation.
 - [MCP status indicator](pi-mcp-status.md) — footer count, local refresh, limitations, installation, and validation.
 - [Pi session auto-rename](pi-session-auto-rename.md) — local installation, Beans identifier rule, and validation.
+- [Quota monitoring package](../extensions/pi-quotas/README.md) — quota status, routed-provider behavior, and local package setup.

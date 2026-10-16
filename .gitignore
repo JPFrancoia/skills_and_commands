@@ -1,1 +1,4 @@
 .pi-subagents/*
+/extensions/pi-quotas/node_modules/
+/extensions/pi-quotas/dist/
+/extensions/pi-quotas/.pi/quotas.json
