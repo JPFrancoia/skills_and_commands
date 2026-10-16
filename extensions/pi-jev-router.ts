@@ -1,8 +1,10 @@
+import type { ClassifierResult } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
   ModelRoute,
   ModelRouteRequest,
+  SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
 const MODELS = {
@@ -53,8 +55,9 @@ export default function jevRouter(pi: ExtensionAPI): void {
       const prompt = latestPrompt(request);
       const jev = ctx.modelRegistry.findOfType("classifier", "typesafe", "jev-latest");
       if (prompt && jev && ctx.modelRegistry.getProviderAuthStatus("typesafe").configured) {
+        let result: ClassifierResult | undefined;
         try {
-          const result = await ctx.modelRegistry.classify(jev, {
+          result = await ctx.modelRegistry.classify(jev, {
             state: { prompt },
             questions: {
               complexity: {
@@ -68,13 +71,22 @@ export default function jevRouter(pi: ExtensionAPI): void {
               },
             },
           }, { signal: request.signal, timeoutMs: 5_000, maxRetries: 0 });
-          request.signal?.throwIfAborted();
-          const answer = result.stopReason === "stop" ? result.answers.complexity : undefined;
-          if (answer?.type === "choice" && Object.hasOwn(MODELS, answer.choice)) {
-            id = MODELS[answer.choice as keyof typeof MODELS];
-          }
         } catch (error) {
           if (request.signal?.aborted) throw error;
+        }
+        if (result?.usage) {
+          // shortcut: Pi exposes appendUsage at runtime only, replace this cast when the extension API supports usage recording.
+          const manager = ctx.sessionManager as typeof ctx.sessionManager & Partial<Pick<SessionManager, "appendUsage">>;
+          if (typeof manager.appendUsage === "function") {
+            manager.appendUsage("classifier", result.provider, result.model, result.usage);
+          } else {
+            ctx.ui.notify("Jev usage tracking is unavailable: Pi no longer exposes appendUsage().", "warning");
+          }
+        }
+        request.signal?.throwIfAborted();
+        const answer = result?.stopReason === "stop" ? result.answers.complexity : undefined;
+        if (answer?.type === "choice" && Object.hasOwn(MODELS, answer.choice)) {
+          id = MODELS[answer.choice as keyof typeof MODELS];
         }
       }
       return routeTo(id, request, ctx);

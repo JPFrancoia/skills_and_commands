@@ -20,6 +20,18 @@ The classifier uses a five-second provider timeout and no provider retries. If J
 
 The router preserves caller cancellation. It does not change a canceled request into a Sol request.
 
+## Usage tracking
+
+After a classifier call, the router records returned usage in the Pi session. The record has the `classifier` kind and returned provider and model values.
+
+The router writes this record before it checks cancellation or selects a route. If the provider returns no usage, the router records no token counts.
+
+Pi's public extension type does not expose `appendUsage()`. The router uses a narrow type assertion to call the existing runtime method. This compatibility boundary can break after a Pi update.
+
+If Pi does not expose `appendUsage()` at runtime, the router shows a warning and continues routing. If Pi cannot persist usage, the error stops routing.
+
+Jev models have a zero price in the installed catalog. Token reports are not exact Jev billing records.
+
 ## Limits and privacy
 
 Jev can select an incorrect complexity level. A short follow-up prompt does not include earlier task context.
@@ -46,7 +58,7 @@ In `$HOME/.pi/agent/settings.json`, load the local path instead of the official 
 "defaultThinkingLevel": "high"
 ```
 
-Reload each open Pi session:
+After you install or update the extension, reload each open Pi session:
 
 ```text
 /reload

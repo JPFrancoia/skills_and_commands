@@ -5,6 +5,7 @@ import type {
   ExtensionContext,
   ModelRoute,
   ModelRouteRequest,
+  SessionManager,
 } from "@earendil-works/pi-coding-agent";
 import jevRouter from "./pi-jev-router.ts";
 
@@ -38,7 +39,14 @@ let onClassify: (() => void) | undefined;
 const missing = new Set<string>();
 const unauthenticated = new Set<string>();
 const calls: Array<{ context: ClassifierContext; options?: ModelsClassifierOptions }> = [];
+const usageRecords: Array<Parameters<SessionManager["appendUsage"]>> = [];
+const warnings: string[] = [];
+const sessionManager = {
+  appendUsage: (...args: Parameters<SessionManager["appendUsage"]>) => { usageRecords.push(args); },
+};
 const ctx = {
+  sessionManager,
+  ui: { notify: (message: string) => { warnings.push(message); } },
   modelRegistry: {
     find: (_provider: string, id: string) => missing.has(id) ? undefined : model(id),
     findOfType: () => classifierAvailable ? model("jev-latest", "typesafe") : undefined,
@@ -158,4 +166,64 @@ await assert.rejects(async () => router.route(request({ signal: midRequest.signa
 assert.equal(calls.at(-1)?.options?.signal, midRequest.signal);
 onClassify = undefined;
 
-console.log("ok: three levels, sticky calls, retries, rerouting, fallback, bounds, auth, cancellation");
+assert.equal(usageRecords.length, 0);
+const usage = {
+  input: 120,
+  output: 8,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 128,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+const withUsage = (result = choice("simple")) => ({
+  ...result,
+  provider: "typesafe",
+  model: "jev-1.14.0",
+  usage,
+});
+response = withUsage();
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-6-luna");
+assert.equal(usageRecords.length, 1);
+assert.deepEqual(usageRecords[0], ["classifier", "typesafe", "jev-1.14.0", usage]);
+assert.equal(usageRecords[0][3], usage);
+for (const reason of ["continuation", "retry", "direct"] as const) {
+  await router.route(request({ reason, previous }), ctx);
+}
+assert.equal(usageRecords.length, 1);
+await router.route(request(), ctx);
+assert.equal(usageRecords.length, 2);
+response = { ...withUsage(), stopReason: "error", answers: {} };
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+assert.equal(usageRecords.length, 3);
+response = choice("simple");
+await router.route(request(), ctx);
+assert.equal(usageRecords.length, 3);
+failure = new Error("Synthetic provider failure without usage");
+await router.route(request(), ctx);
+failure = undefined;
+assert.equal(usageRecords.length, 3);
+
+const canceledWithUsage = new AbortController();
+response = withUsage();
+onClassify = () => canceledWithUsage.abort();
+await assert.rejects(async () => router.route(request({ signal: canceledWithUsage.signal }), ctx), { name: "AbortError" });
+onClassify = undefined;
+assert.equal(usageRecords.length, 4);
+
+const unavailableRecorder = {
+  ...ctx,
+  sessionManager: {},
+} as unknown as ExtensionContext;
+assert.equal((await router.route(request(), unavailableRecorder)).model.id, "gpt-6-luna");
+assert.equal(usageRecords.length, 4);
+assert.equal(warnings.length, 1);
+assert.match(warnings[0], /usage.*appendUsage/i);
+
+const brokenRecorder = {
+  ...ctx,
+  sessionManager: { appendUsage: () => { throw new Error("Synthetic usage persistence failure"); } },
+} as unknown as ExtensionContext;
+await assert.rejects(async () => router.route(request(), brokenRecorder), /usage persistence failure/);
+assert.equal(warnings.length, 1);
+
+console.log("ok: three levels, sticky calls, retries, rerouting, fallback, bounds, auth, cancellation, usage accounting");
