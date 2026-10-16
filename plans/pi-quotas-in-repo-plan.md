@@ -16,42 +16,46 @@ Keep the patched quota package in the existing `skills_and_commands` repository.
 
 ## 3. Proposed implementation
 
-Copy the complete package into `extensions/pi-quotas/`, excluding Git history, installed dependencies, and development-only Pi settings. Keep its package manifest, lockfile, source, tests, documentation, license, and contribution files.
+Keep the complete package under `extensions/pi-quotas/`, excluding Git history, installed dependencies, and development-only Pi settings. The package retains its source, tests, docs, license, and contribution files.
 
-Change the single global package entry to `../../informatique/ai/skills_and_commands/extensions/pi-quotas`. Keep the npm-installed copy unused. Ignore local `node_modules`, generated `dist`, and per-project quota config.
+Pi loads commands and quota tools as a filtered local package. A small repository-owned loader imports the patched usage footer from its canonical source. Symlink that loader into `~/.pi/agent/extensions/`. Exclude the package's own usage-footer resource so Pi registers it once. Restore the existing `harness-eval` package entry and leave the npm quota install unused.
 
 ## 4. File-by-file impact
 
-- `extensions/pi-quotas/`: vendored quota package, its tests, and local setup notes.
+- `extensions/pi-quotas/`: vendored quota package, tests, and local setup notes.
+- `extensions/pi-quotas-usage-status.ts`: loader for the patched footer.
 - `.gitignore`: exclude package dependencies and generated files.
-- `docs/README.md`: index the package's durable behavior and setup notes.
-- `~/.pi/agent/settings.json`: point from the separate checkout to this repository.
+- `docs/README.md`: index the package's behavior and setup notes.
+- `~/.pi/agent/settings.json`: filter package resources and retain `harness-eval`.
+- `~/.pi/agent/extensions/pi-quotas-usage-status.ts`: symlink to the loader.
 - This plan: preserve the migration decision and checks.
 
 ## 5. Risks and edge cases
 
 - The npm-installed package and old checkout remain on disk but are not loaded.
-- Pi will load duplicate quota handlers if either old package entry is added again.
-- Source changes remain in a nested package. Update its dependencies from its own `package.json`.
-- Keep `extensions/pi-quotas` at this path because Pi settings use a relative path.
+- Pi will register duplicate footer updates if the package filter includes its usage-status resource.
+- The home-directory symlink must remain in place. Repository clones do not create it automatically.
+- The loader expects this repository under `~/informatique/ai/skills_and_commands`.
+- Update package dependencies from its own `package.json`.
 - The full package is larger than copying one file, but it preserves quota commands, account access code, tests, and independent package tooling.
 
 ## 6. Validation / testing
 
 - Run all 142 quota package tests, type checks, and lint checks from the vendored package.
-- Confirm `pi list` resolves one quota package at the requested path.
-- Compare settings to confirm only the quota source changed.
-- Run Pi with normal extension discovery and inspect the Jev/Codex footer.
-- Run `pi update` against the local source and verify its content remains unchanged.
+- Confirm `pi list` resolves one filtered quota package at the requested path.
+- Load the symlinked footer with Pi's extension loader.
+- Check that settings retain `harness-eval`.
+- Run Pi with normal discovery and inspect one Jev/Codex quota footer.
+- Run `pi update` against the local source and verify it remains unchanged.
 - Run repository `git diff --check` and stage only quota-related files.
 
 ## 7. Step-by-step execution checklist
 
 1. [x] Inspect the package and the existing extension layout.
 2. [x] Copy the complete package into `extensions/pi-quotas/`.
-3. [x] Update the one Pi package entry and ignore generated files.
-4. [x] Run package and live Pi checks.
-5. [x] Commit only the quota-related migration changes.
+3. [x] Filter package resources and ignore generated files.
+4. [x] Symlink and test the repository-owned footer loader.
+5. [x] Run package and live Pi checks, then commit quota-related files.
 
 ## 8. Open questions / assumptions
 
@@ -68,3 +72,6 @@ The user explicitly requested this repository path. A full local Pi package unde
 - Normal Pi extension discovery shows the Jev selector, Codex model, and `7d:69% left` quota status.
 - No unrelated existing `skills_and_commands` changes were staged.
 - No remote changes were made.
+- The footer loader is symlinked into Pi's discovered singular path: `~/.pi/agent/extensions/pi-quotas-usage-status.ts`.
+- `pi list` reports the filtered package, and Pi loads the footer once from the symlink.
+- A fresh Pi session shows Jev routing to Codex with `7d:69% left`.

@@ -27,16 +27,20 @@ pi install ./pi-quotas
 
 ### Local routed-provider fix
 
-This checkout includes the quota fix for virtual models such as `jev/auto`.
-Pi loads this checkout through the following package entry in `~/.pi/agent/settings.json`:
+This package includes the quota fix for virtual models such as `jev/auto`.
+The package entry in `~/.pi/agent/settings.json` loads its commands and quota tools from this directory.
+The usage footer loader is symlinked to `~/.pi/agent/extensions/pi-quotas-usage-status.ts`.
+Create the link with:
 
-```json
-"../../informatique/ai/skills_and_commands/extensions/pi-quotas"
+```bash
+ln -s "$HOME/informatique/ai/skills_and_commands/extensions/pi-quotas-usage-status.ts" "$HOME/.pi/agent/extensions/pi-quotas-usage-status.ts"
 ```
 
-Keep only this local entry. Do not also load `npm:@latentminds/pi-quotas`.
-Pi skips local packages during package updates, so those updates do not replace this source.
-Keep this directory in the configured repository path. Run `/reload` after changing its code.
+The loader imports `src/extensions/usage-status/index.ts` from this package.
+The package entry excludes that footer to prevent duplicate status updates.
+Do not also load `npm:@latentminds/pi-quotas`.
+Pi skips local packages during package updates, so updates do not replace this source.
+Keep this directory at its configured repository path. Run `/reload` after changing its code.
 
 **Try without installing:**
 
