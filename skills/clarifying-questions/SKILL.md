@@ -19,6 +19,7 @@ Inspect the relevant code and documentation before asking.
 ## Ask one decision
 
 Ask one decision per question. Do not bundle independent decisions.
+Make each question understandable without source-code knowledge or earlier chat context. Include all context needed for the decision.
 
 Before the question, explain:
 

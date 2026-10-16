@@ -24,7 +24,11 @@ Do not create a plan for:
 4. Make the initial plan exploratory when the codebase has unresolved facts.
 5. Before implementation, make the plan implementation-ready.
 6. Present the plan path and a concise, high-signal summary.
-7. Wait for user approval before implementation.
+7. Wait for user approval unless the user already approved the current scope.
+
+Treat `go`, `implement`, `do it`, or an equivalent direct request as approval of the current scope and latest plan.
+If the scope is clear, begin without another confirmation.
+Stop only for a security, data-loss, or consequential user-decision blocker.
 
 Do not write only a checklist.
 
