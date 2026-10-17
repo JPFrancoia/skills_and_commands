@@ -194,6 +194,13 @@ def get_connection(db_path: str):
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
+
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(memories)")}
+    if columns:
+        for column in ("session_directory", "reflections", "observations"):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE memories ADD COLUMN {column} TEXT")
+        conn.commit()
     return conn
 
 
@@ -219,6 +226,8 @@ def init_db(db_path: str):
             title TEXT NOT NULL,
             content TEXT NOT NULL,
             full_content TEXT,
+            reflections TEXT,
+            observations TEXT,
             tags TEXT,
             session_directory TEXT,
             created_at TEXT DEFAULT (datetime('now')),
@@ -226,11 +235,6 @@ def init_db(db_path: str):
         )
     """)
 
-    # Migrate existing databases: add session_directory column if missing
-    try:
-        conn.execute("ALTER TABLE memories ADD COLUMN session_directory TEXT")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at)"
     )
@@ -249,9 +253,7 @@ def init_db(db_path: str):
     print(f"Database initialized: {db_path}")
 
 
-def export_pi_session(session_ref: str) -> str:
-    path = resolve_pi_session(session_ref)
-    _header, entries = load_pi_session(path)
+def export_pi_entries(entries: list[dict]) -> str:
     entries = get_pi_active_entries(entries)
     if not entries:
         raise RuntimeError("Session has no messages")
@@ -283,6 +285,58 @@ def export_pi_session(session_ref: str) -> str:
     return "\n".join(lines)
 
 
+def export_pi_session(session_ref: str) -> str:
+    path = resolve_pi_session(session_ref)
+    _header, entries = load_pi_session(path)
+    return export_pi_entries(entries)
+
+
+def extract_pi_observational_memory(
+    entries: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Archive OM V3 records on the active branch, including dropped observations."""
+    reflections = {}
+    observations = {}
+    dropped = set()
+    record_types = {
+        "om.reflections.recorded": ("reflections", reflections),
+        "om.observations.recorded": ("observations", observations),
+    }
+    for entry in get_pi_active_entries(entries):
+        if entry.get("type") != "custom":
+            continue
+        kind = entry.get("customType")
+        if kind == "om.observations.dropped":
+            field = "observationIds"
+        elif kind in record_types:
+            field, records = record_types[kind]
+        else:
+            continue
+
+        data = entry.get("data")
+        if not isinstance(data, dict) or not isinstance(data.get(field), list):
+            raise TypeError(f"Invalid OM {field} in session entry {entry.get('id')}")
+        for item in data[field]:
+            if kind == "om.observations.dropped":
+                if not isinstance(item, str) or not item:
+                    raise ValueError(f"Invalid OM observation id in {entry.get('id')}")
+                dropped.add(item)
+                continue
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("id"), str)
+                or not item["id"]
+                or not isinstance(item.get("content"), str)
+                or not item["content"].strip()
+            ):
+                raise ValueError(f"Invalid OM {field} record in {entry.get('id')}")
+            records.setdefault(item["id"], item)
+
+    return list(reflections.values()), [
+        {**item, "dropped": item["id"] in dropped} for item in observations.values()
+    ]
+
+
 def save_memory(
     db_path: str,
     memory_id: str,
@@ -291,28 +345,41 @@ def save_memory(
     full_content: str = "",
     tags: str = "",
     session_directory: str = "",
+    reflections: list[dict] | None = None,
+    observations: list[dict] | None = None,
 ):
-    """Save a memory to the database."""
+    """Save a memory and its recorded OM data to the database."""
     conn = get_connection(db_path)
 
     conn.execute(
         """
-        INSERT INTO memories (id, title, content, full_content, tags, session_directory, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        INSERT INTO memories (
+            id, title, content, full_content, tags, session_directory,
+            reflections, observations, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             content = excluded.content,
             full_content = excluded.full_content,
             tags = excluded.tags,
             session_directory = excluded.session_directory,
+            reflections = excluded.reflections,
+            observations = excluded.observations,
             updated_at = datetime('now')
         """,
-        (memory_id, title, content, full_content, tags, session_directory),
+        (
+            memory_id, title, content, full_content, tags, session_directory,
+            json.dumps(reflections or [], ensure_ascii=False),
+            json.dumps(observations or [], ensure_ascii=False),
+        ),
     )
     conn.commit()
 
     # Save embedding for semantic search
     embed_text = f"{title}. {content}"
+    for item in [*(reflections or []), *(observations or [])]:
+        embed_text += f"\n{item['content']}"
     embedding = get_embedding(embed_text)
 
     conn.execute("DELETE FROM memories_vec WHERE id = ?", (memory_id,))
@@ -343,7 +410,9 @@ def query_memories(db_path: str, query: str, limit: int = 5, show_full: bool = F
             m.full_content,
             m.tags,
             m.created_at,
-            m.session_directory
+            m.session_directory,
+            m.reflections,
+            m.observations
         FROM memories_vec v
         JOIN memories m ON v.id = m.id
         WHERE v.embedding MATCH ? AND k = ?
@@ -356,9 +425,10 @@ def query_memories(db_path: str, query: str, limit: int = 5, show_full: bool = F
 
     print(f"Semantic search for: {query}\n")
 
-    for i, (id, distance, title, content, full_content, tags, created_at, session_directory) in enumerate(
-        results, 1
-    ):
+    for i, (
+        id, distance, title, content, full_content, tags, created_at,
+        session_directory, reflections, observations,
+    ) in enumerate(results, 1):
         similarity = math.exp(-distance) * 100
 
         print(f"--- Result {i} (score: {similarity:.1f}) ---")
@@ -374,6 +444,13 @@ def query_memories(db_path: str, query: str, limit: int = 5, show_full: bool = F
         else:
             preview = content[:200] + "..." if len(content) > 200 else content
             print(f"Preview: {preview}")
+        for label, stored in (
+            ("Reflections", reflections), ("Observations", observations),
+        ):
+            records = json.loads(stored or "[]")
+            if records:
+                rendered = json.dumps(records, ensure_ascii=False, indent=2)
+                print(f"\n## {label}:\n{rendered}")
         print()
 
     print(f"Found {len(results)} results")
@@ -456,9 +533,12 @@ def main():
             print("Error: No summary provided", file=sys.stderr)
             sys.exit(1)
 
-        # Export session
+        # Export the transcript and OM records from the same session snapshot.
         try:
-            full_content = export_pi_session(session_id)
+            path = resolve_pi_session(session_id)
+            _header, entries = load_pi_session(path)
+            full_content = export_pi_entries(entries)
+            reflections, observations = extract_pi_observational_memory(entries)
         except Exception as e:
             print(f"Error exporting session: {e}", file=sys.stderr)
             sys.exit(1)
@@ -466,7 +546,7 @@ def main():
         session_directory = os.getcwd()
         save_memory(
             db_path, session_id, title, content, full_content, args.tags,
-            session_directory,
+            session_directory, reflections=reflections, observations=observations,
         )
 
     elif args.command == "query":
