@@ -1,6 +1,6 @@
 # Pi Jev router
 
-`extensions/pi-jev-router.ts` registers the `jev/auto` virtual model. Jev classifies each new user prompt and selects a Codex model.
+`extensions/pi-jev-router/pi-jev-router.ts` registers the `jev/auto` virtual model. Jev classifies each new user prompt and selects a Codex model.
 
 | Jev result | Model |
 | --- | --- |
@@ -40,18 +40,17 @@ The router sends the bounded prompt text to TypeSafe. Do not use this router if 
 
 ## Install
 
-From this repository root, create the local extension symlink:
+From this repository root, install the local package:
 
 ```bash
-ln -s "$PWD/extensions/pi-jev-router.ts" \
-  "$HOME/.pi/agent/extensions/pi-jev-router.ts"
+pi install "$PWD/extensions/pi-jev-router"
 ```
 
-In `$HOME/.pi/agent/settings.json`, load the local path instead of the official Jev example. Keep these defaults:
+In `$HOME/.pi/agent/settings.json`, load the package path and keep these defaults:
 
 ```json
-"extensions": [
-  "~/.pi/agent/extensions/pi-jev-router.ts"
+"packages": [
+  "~/informatique/ai/skills_and_commands/extensions/pi-jev-router"
 ],
 "defaultProvider": "jev",
 "defaultModel": "auto",
@@ -74,11 +73,10 @@ If an existing session does not select `jev/auto`, select it explicitly:
 
 ## Validate
 
-Run the focused assertions:
+Run the adjacent test with the host `jiti` setup in [Local Pi resources](local-resources.md):
 
 ```bash
-$HOME/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/.bin/jiti \
-  extensions/pi-jev-router.test.ts
+node "$host/node_modules/jiti/lib/jiti-cli.mjs" extensions/pi-jev-router/pi-jev-router.test.ts
 ```
 
 Run the repository checks:

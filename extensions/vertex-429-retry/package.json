@@ -1,0 +1,10 @@
+{
+  "name": "vertex-429-retry",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./vertex-429-retry.ts"
+    ]
+  }
+}

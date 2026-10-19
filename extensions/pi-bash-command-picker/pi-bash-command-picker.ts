@@ -1,7 +1,7 @@
 /**
  * pi-bash-command-picker — copy shell commands or any assistant code block.
  *
- * Install by symlinking/copying this file into ~/.pi/agent/extensions/ and running /reload.
+ * Install this folder with pi install /path/to/pi-bash-command-picker, then run /reload.
  * Shortcut: F2
  */
 

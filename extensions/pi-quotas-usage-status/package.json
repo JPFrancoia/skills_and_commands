@@ -1,0 +1,10 @@
+{
+  "name": "pi-quotas-usage-status",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./pi-quotas-usage-status.ts"
+    ]
+  }
+}

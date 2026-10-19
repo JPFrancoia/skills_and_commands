@@ -1,6 +1,6 @@
 # MCP status indicator
 
-`extensions/pi-mcp-status.ts` shows `🔌 N` in the Pi footer.
+`extensions/pi-mcp-status/pi-mcp-status.ts` shows `🔌 N` in the Pi footer.
 
 `N` is the number of distinct MCP namespaces that have a registered, non-hidden tool. The indicator can show `🔌 0`.
 
@@ -10,11 +10,10 @@ After a server disconnects, Pi can retain its registered tools. The indicator ca
 
 ## Install
 
-From this repository root, create the local extension symlink:
+From this repository root, install the local package:
 
 ```bash
-ln -s "$PWD/extensions/pi-mcp-status.ts" \
-  "$HOME/.pi/agent/extensions/pi-mcp-status.ts"
+pi install "$PWD/extensions/pi-mcp-status"
 ```
 
 Reload each open Pi session:
@@ -25,9 +24,8 @@ Reload each open Pi session:
 
 ## Validate
 
-Run the focused test with the installed Pi `jiti` fallback:
+Run the adjacent test with the host `jiti` setup in [Local Pi resources](local-resources.md):
 
 ```bash
-~/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/.bin/jiti \
-  extensions/pi-mcp-status.test.ts
+node "$host/node_modules/jiti/lib/jiti-cli.mjs" extensions/pi-mcp-status/pi-mcp-status.test.ts
 ```

@@ -6,7 +6,7 @@
  * gitlab.* hosts use `glab`, github.* hosts use `gh`. This is a plain fetch
  * added to the conversation context without triggering an agent turn.
  *
- * Install by symlinking this file into ~/.pi/agent/extensions/ and running /reload.
+ * Install this folder with pi install /path/to/pi-open, then run /reload.
  */
 
 import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";

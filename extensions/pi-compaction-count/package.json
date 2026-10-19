@@ -1,0 +1,10 @@
+{
+  "name": "pi-compaction-count",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./pi-compaction-count.ts"
+    ]
+  }
+}

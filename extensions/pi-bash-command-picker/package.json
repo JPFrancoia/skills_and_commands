@@ -1,0 +1,10 @@
+{
+  "name": "pi-bash-command-picker",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./pi-bash-command-picker.ts"
+    ]
+  }
+}

@@ -1,7 +1,7 @@
 /**
  * pi-mcp-status — show servers with available MCP tools in Pi's footer.
  *
- * Install by symlinking this file into ~/.pi/agent/extensions/ and running /reload.
+ * Install this folder with pi install /path/to/pi-mcp-status, then run /reload.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";

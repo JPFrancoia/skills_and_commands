@@ -2,6 +2,8 @@
 
 The Jev clarity reviewer scores supplied source code. It does not report findings or suggest fixes.
 
+For local setup and troubleshooting, read the [local README](../agents/pi/clarity-reviewer/README.md).
+
 The reviewer uses the `typesafe/jev-latest` classifier. It does not run a chat model. It uses the credentials from the installed Pi SDK.
 
 ## Input and result

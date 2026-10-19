@@ -1,0 +1,10 @@
+{
+  "name": "pi-jev-router",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./pi-jev-router.ts"
+    ]
+  }
+}

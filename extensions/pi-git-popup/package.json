@@ -1,0 +1,10 @@
+{
+  "name": "pi-git-popup",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./pi-git-popup.ts"
+    ]
+  }
+}

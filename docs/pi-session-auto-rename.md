@@ -4,11 +4,11 @@
 
 ## Install
 
-Remove the npm package before you install the local extension. The two extensions register the same commands.
+Remove the npm package before you install the local extension. The two extensions register the same commands. From the repository root, run:
 
 ```bash
 pi remove npm:pi-session-auto-rename
-pi install /home/djipey/informatique/ai/skills_and_commands/extensions/pi-session-auto-rename
+pi install "$PWD/extensions/pi-session-auto-rename"
 ```
 
 Reload an open Pi session with `/reload`. Start a new Pi session if reload fails.
@@ -49,10 +49,10 @@ The naming request uses minimal reasoning and a 512-token output cap. If a model
 
 ## Validation
 
-Run the adjacent test after you change the extension:
+Run the adjacent test with the host `jiti` setup in [Local Pi resources](local-resources.md):
 
 ```bash
-~/.pi/agent/npm/node_modules/.bin/jiti extensions/pi-session-auto-rename/index.test.ts
+node "$host/node_modules/jiti/lib/jiti-cli.mjs" extensions/pi-session-auto-rename/index.test.ts
 ```
 
 The fork uses the upstream MIT license. See `extensions/pi-session-auto-rename/LICENSE`.

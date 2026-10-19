@@ -1,0 +1,10 @@
+{
+  "name": "pi-open",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./pi-open.ts"
+    ]
+  }
+}

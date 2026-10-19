@@ -1,6 +1,6 @@
 # Pi recap
 
-`extensions/pi-recap.ts` replaces `pi-tldr` with a local three-line recap above the editor.
+`extensions/pi-recap/pi-recap.ts` replaces `pi-tldr` with a local three-line recap above the editor.
 
 ```text
 Now: <current work or state>
@@ -57,11 +57,10 @@ pi list
 pi remove '<pi-tldr source from pi list>'
 ```
 
-From this repository root, add the local extension symlink:
+From this repository root, install the local package:
 
 ```bash
-ln -s "$PWD/extensions/pi-recap.ts" \
-  "$HOME/.pi/agent/extensions/pi-recap.ts"
+pi install "$PWD/extensions/pi-recap"
 ```
 
 Reload each open Pi session:
@@ -74,11 +73,10 @@ The old `tldr` settings section can remain in `~/.pi/agent/settings.json`. The l
 
 ## Validate
 
-Run the focused test:
+Run the adjacent test with the host `jiti` setup in [Local Pi resources](local-resources.md):
 
 ```bash
-~/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/.bin/jiti \
-  extensions/pi-recap.test.ts
+node "$host/node_modules/jiti/lib/jiti-cli.mjs" extensions/pi-recap/pi-recap.test.ts
 ```
 
 Run the repository checks:

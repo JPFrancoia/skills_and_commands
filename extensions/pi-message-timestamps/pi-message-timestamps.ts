@@ -1,7 +1,7 @@
 /**
  * pi-message-timestamps — show a local-time separator before each user and assistant message.
  *
- * Install by symlinking this file into ~/.pi/agent/extensions/ and running /reload.
+ * Install this folder with pi install /path/to/pi-message-timestamps, then run /reload.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

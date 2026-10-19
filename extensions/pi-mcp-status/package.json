@@ -1,0 +1,10 @@
+{
+  "name": "pi-mcp-status",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./pi-mcp-status.ts"
+    ]
+  }
+}

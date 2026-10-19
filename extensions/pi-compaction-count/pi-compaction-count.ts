@@ -1,7 +1,7 @@
 /**
  * pi-compaction-count — show the active branch's compaction count in Pi's footer status line.
  *
- * Install by symlinking this file into ~/.pi/agent/extensions/ and running /reload.
+ * Install this folder with pi install /path/to/pi-compaction-count, then run /reload.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";

@@ -6,7 +6,7 @@
  * worktrees are listed only for the root repository. This extension keeps no
  * session history, so it cannot know which worktrees this session touched.
  *
- * Install by symlinking this file into ~/.pi/agent/extensions/ and running /reload.
+ * Install this folder with pi install /path/to/pi-git-popup, then run /reload.
  */
 
 import type { Dirent } from "node:fs";

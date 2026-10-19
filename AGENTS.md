@@ -8,7 +8,7 @@ This repository stores reusable Pi configuration: agent definitions, prompt comm
 
 - `agents/pi/`: Pi agent definitions.
 - `commands/`: reusable Markdown prompt commands.
-- `extensions/`: Pi TypeScript extensions and adjacent `*.test.ts` files.
+- `extensions/<name>/`: one local Pi package per extension, with an explicit entry point and adjacent `*.test.ts` files.
 - `skills/`: self-contained skills. Each skill's entry point is `SKILL.md`; scripts and references stay inside that skill directory.
 - `plans/`: implementation plans and completed decision records. Never delete completed plans.
 
@@ -31,11 +31,7 @@ git diff --check
 pre-commit run --all-files
 ```
 
-For Pi extension changes, run the adjacent test directly:
-
-```bash
-~/.pi/agent/npm/node_modules/.bin/jiti extensions/<name>.test.ts
-```
+For Pi extension changes, run the adjacent `extensions/<name>/<name>.test.ts` file with Pi's installed jiti loader. Use host package aliases for Pi's import-only ESM packages. See `docs/local-resources.md` for the command. Some packages keep their own test commands.
 
 For Python changes, use the skill's existing `uv` project or script-level test command rather than creating a repository-wide environment.
 

@@ -1,7 +1,7 @@
 /**
- * pi-background-commit — run /m [repo-path] as an async contextual commit.
+ * pi-background-pr — run /pr [repo-path] as an async commit/PR/CI workflow.
  *
- * Install by symlinking this file into ~/.pi/agent/extensions/ and running /reload.
+ * Install this folder with pi install /path/to/pi-background-pr, then run /reload.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -172,7 +172,7 @@ function watchLaunchReply(pi: ExtensionAPI, ctx: ExtensionContext, requestId: st
 	let unsubscribe: (() => void) | undefined;
 	const timeout = setTimeout(() => {
 		unsubscribe?.();
-		notify(ctx, "Background commit launch timed out; run /subagents-doctor.", "error");
+		notify(ctx, "Background PR launch timed out; run /subagents-doctor.", "error");
 	}, RPC_TIMEOUT_MS);
 	timeout.unref();
 
@@ -181,10 +181,10 @@ function watchLaunchReply(pi: ExtensionAPI, ctx: ExtensionContext, requestId: st
 		unsubscribe?.();
 		const reply = data as RpcReply;
 		if (reply.success) {
-			notify(ctx, `Background commit started in ${repository}.`);
+			notify(ctx, `Background PR workflow started in ${repository}.`);
 			return;
 		}
-		notify(ctx, reply.error?.message ?? "Background commit failed to launch.", "error");
+		notify(ctx, reply.error?.message ?? "Background PR workflow failed to launch.", "error");
 	});
 }
 
@@ -196,8 +196,8 @@ export default function (pi: ExtensionAPI) {
 		completionTargets = undefined;
 	});
 
-	pi.registerCommand("m", {
-		description: "Commit staged changes contextually in the background",
+	pi.registerCommand("pr", {
+		description: "Commit, push, open a PR or MR, and watch CI in the background",
 		getArgumentCompletions: async (prefix) => {
 			const cwd = completionCwd;
 			const targets = await (completionTargets ??= discoverCompletionTargets(pi, cwd));
@@ -221,12 +221,12 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			const requestId = `background-commit-${randomUUID()}`;
+			const requestId = `background-pr-${randomUUID()}`;
 			const sessionFile = ctx.sessionManager.getSessionFile();
 			const context = sessionFile && existsSync(sessionFile) && ctx.sessionManager.getLeafId() ? "fork" : "fresh";
 			watchLaunchReply(pi, ctx, requestId, repository);
 
-			const task = `Target repository: ${repository}\nThe user directly invoked /m. This is explicit current-session authority to commit the staged changes. Do not request confirmation. Use git -C with that exact path for every Git command. Follow your contextual commit instructions.`;
+			const task = `Target repository: ${repository}\nThe user directly invoked /pr. This is explicit current-session authority to commit the staged changes, push, create or reuse the matching GitHub PR or GitLab MR, and watch CI. Do not request confirmation. Create a meaningful branch first if HEAD is main or master. Use git -C with that exact path for every Git command. Follow your pull-request instructions.`;
 			pi.events.emit(RPC_REQUEST, {
 				version: 1,
 				requestId,
@@ -236,12 +236,12 @@ export default function (pi: ExtensionAPI) {
 					context,
 					async: true,
 					agentScope: "both",
-					script: `return runs.run("main", { agent: "contextual-committer", task: ${JSON.stringify(task)} });`,
+					script: `return runs.run("main", { agent: "pull-request-creator", task: ${JSON.stringify(task)} });`,
 				},
-				source: { extension: "pi-background-commit" },
+				source: { extension: "pi-background-pr" },
 			});
 
-			notify(ctx, `Launching background commit in ${repository}…`);
+			notify(ctx, `Launching background PR workflow in ${repository}…`);
 		},
 	});
 }

@@ -1,0 +1,10 @@
+{
+  "name": "pi-background-commit",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./pi-background-commit.ts"
+    ]
+  }
+}
