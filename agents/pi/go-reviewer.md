@@ -2,7 +2,7 @@
 name: go-reviewer
 description: Go code reviewer acting as JPFrancoia's digital twin. Reviews diffs and files against personal coding conventions.
 tools: read, bash
-model: openai-codex/gpt-5.6-sol
+model: openai-codex/gpt-6.1-sol
 thinking: medium
 systemPromptMode: replace
 inheritProjectContext: false

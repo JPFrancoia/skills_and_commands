@@ -2,7 +2,7 @@
 name: contextual-committer
 description: Commit the target repository's currently staged changes with a contextual commit message.
 tools: read, bash
-model: openai-codex/gpt-5.6-luna
+model: openai-codex/gpt-6-luna
 thinking: medium
 systemPromptMode: replace
 inheritProjectContext: true

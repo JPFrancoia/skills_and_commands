@@ -2,7 +2,7 @@
 name: docs-maintainer
 description: Keeps workspace documentation aligned with completed implementation, including changes in nested repositories.
 tools: read, grep, find, ls, bash, edit, write
-model: openai-codex/gpt-5.6-terra
+model: openai-codex/gpt-6-luna
 thinking: medium
 systemPromptMode: replace
 inheritProjectContext: true
