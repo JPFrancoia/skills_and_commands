@@ -10,13 +10,27 @@
 
 ## Routing behavior
 
-The router sends only the latest user prompt to TypeSafe. It sends the first 16,000 characters of text blocks from that prompt.
+The router sends the latest user prompt and recent activity to TypeSafe. It sends up to 16,000 characters from the latest prompt.
 
-The router keeps the selected model during tool continuations. It keeps the failed model during a retry. It does not select Luna after a successful edit.
+For context, the router sends up to 12 recent user, assistant, and tool-result messages. It sends the last 1,000 text characters from each message, with a total limit of 12,000 characters. It excludes system messages, thinking, images, tool arguments, and tool details. It does not redact other text.
+
+The router normally keeps the selected model during tool continuations. It reassesses the work after any of these thresholds:
+
+- Five continuations since the last check.
+- Three new flagged tool errors since the last check.
+- Ten minutes since the last check.
+
+These thresholds trigger a check, not a forced upgrade. Checks happen before a model request, not during a running tool. New user requests always trigger classification.
+
+The classifier considers repeated failures, repeated unsuccessful fixes, circular investigation, user corrections, and stalled progress. Productive long work, one ordinary error, external waiting, or missing credentials alone do not justify Astra. The elapsed time is supporting context, not a deadline.
+
+During a continuation, the router changes to Astra only when the classifier selects Astra. Otherwise, it keeps the current model and thinking level, including when classification fails or returns an unusable result. Astra stays selected for the rest of the run. A new user request triggers classification again for any tier.
+
+API retries keep the failed model. They do not trigger escalation checks.
 
 For direct requests, the router reuses the previous model. If no previous model exists, it uses Sol. The router preserves Pi's selected thinking level.
 
-The classifier uses a five-second provider timeout and no provider retries. If Jev is unavailable, returns an unusable result, or returns an error, the router uses Sol. If the selected model is unavailable or lacks authentication, the router uses Sol. If Sol is unavailable or lacks authentication, the router reports an error.
+The classifier uses a five-second provider timeout and no provider retries. For new user requests, Jev failures or unusable results make the router use Sol. Missing Jev access also makes it use Sol. During a continuation, these classifier failures keep the current model and thinking level. If the selected model is unavailable or lacks authentication, the router uses Sol. If Sol is unavailable or lacks authentication, the router reports an error.
 
 The router preserves caller cancellation. It does not change a canceled request into a Sol request.
 
@@ -34,9 +48,9 @@ Jev models have a zero price in the installed catalog. Token reports are not exa
 
 ## Limits and privacy
 
-Jev can select an incorrect complexity level. A short follow-up prompt does not include earlier task context.
+Jev can select an incorrect complexity level. Bounded recent activity can omit earlier task context. A model switch loses prompt-cache benefits and can trigger normal Pi compaction.
 
-The router sends the bounded prompt text to TypeSafe. Do not use this router if TypeSafe must not receive that prompt text.
+The router sends bounded user, assistant, and tool-result text to TypeSafe. This text can contain private data from tool output. If TypeSafe must not receive this text, do not use this router.
 
 ## Install
 
