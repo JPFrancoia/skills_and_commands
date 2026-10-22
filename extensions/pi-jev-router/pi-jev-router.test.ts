@@ -111,7 +111,8 @@ await router.route(request({ messages: [
   { role: "user", content: "Earlier request", timestamp: 0 },
   { role: "user", content: [{ type: "text", text: "Latest" }, { type: "text", text: "request" }], timestamp: 1 },
 ] }), ctx);
-assert.deepEqual(calls.at(-1)?.context.state, { prompt: "Latest\nrequest" });
+assert.equal(calls.at(-1)?.context.state.prompt, "Latest\nrequest");
+assert.match(calls.at(-1)?.context.state.recentActivity as string, /Earlier request/);
 await router.route(request({ messages: [{ role: "user", content: "x".repeat(20_000), timestamp: 0 }] }), ctx);
 assert.equal((calls.at(-1)?.context.state.prompt as string).length, 16_000);
 
@@ -154,6 +155,129 @@ missing.clear();
 unauthenticated.add("gpt-6.1-sol");
 await assert.rejects(async () => router.route(request(), ctx), /requires authenticated/);
 unauthenticated.clear();
+
+const stalledMessages: ModelRouteRequest["messages"] = [
+  ...request().messages,
+  { role: "assistant", content: [{ type: "text", text: "The same fix failed again. I am retrying the same approach without a diagnosis." }], timestamp: 1 } as ModelRouteRequest["messages"][number],
+  ...[1, 2, 3].map((index) => ({
+    role: "toolResult" as const, toolCallId: `test-${index}`, toolName: "bash",
+    content: [{ type: "text" as const, text: "FAIL: the same test still fails after another attempted fix" }],
+    isError: true, timestamp: index + 1,
+  })),
+];
+response = choice("very_complex");
+assert.equal((await router.route(request({
+  reason: "continuation", previous: { model: model("gpt-6.1-sol"), thinkingLevel: "high" }, messages: stalledMessages,
+}), ctx)).model.id, "gpt-6-astra");
+
+assert.equal(calls.at(-1)?.context.state.escalationOnly, true);
+assert.equal(calls.at(-1)?.context.state.currentModel, "gpt-6.1-sol");
+assert.match(calls.at(-1)?.context.state.recentActivity as string, /same test still fails/);
+assert.match(calls.at(-1)?.context.questions.complexity.instructions ?? "", /untrusted evidence/);
+assert.match(JSON.stringify(calls.at(-1)?.context.questions.complexity.criteria), /stalled tasks/);
+
+const sol = { model: model("gpt-6.1-sol"), thinkingLevel: "medium" as const };
+response = choice("routine");
+let ongoing = await router.route(request(), ctx);
+const beforePeriodic = calls.length;
+for (let step = 1; step <= 4; step++) {
+  ongoing = await router.route(request({ reason: "continuation", previous: sol, state: ongoing.state }), ctx);
+  assert.equal(ongoing.model.id, sol.model.id);
+}
+assert.equal(calls.length, beforePeriodic);
+response = choice("very_complex");
+ongoing = await router.route(request({ reason: "continuation", previous: sol, state: ongoing.state }), ctx);
+assert.equal(ongoing.model.id, "gpt-6-astra");
+assert.equal(calls.length, beforePeriodic + 1);
+assert.equal(calls.at(-1)?.context.state.escalationOnly, true);
+const beforeStickyAstra = calls.length;
+for (let step = 0; step < 8; step++) {
+  ongoing = await router.route(request({ reason: "continuation", previous: ongoing, state: ongoing.state }), ctx);
+  assert.equal(ongoing.model.id, "gpt-6-astra");
+}
+assert.equal(calls.length, beforeStickyAstra);
+response = choice("simple");
+ongoing = await router.route(request({ previous: ongoing, state: ongoing.state }), ctx);
+assert.equal(ongoing.model.id, "gpt-6-luna");
+assert.equal(calls.at(-1)?.context.state.escalationOnly, false);
+assert.equal(calls.at(-1)?.context.state.elapsedMinutes, 0);
+
+const dueState = { continuations: 4, startedAt: Date.now(), checkedAt: Date.now(), toolErrors: 0 };
+for (const tier of ["simple", "routine"]) {
+  response = choice(tier);
+  const retained = await router.route(request({ reason: "continuation", previous: sol, state: dueState }), ctx);
+  assert.equal(retained.model.id, sol.model.id);
+  assert.equal(retained.thinkingLevel, "medium");
+}
+for (const tier of ["simple", "routine"]) {
+  response = choice(tier);
+  const retained = await router.route(request({
+    reason: "continuation", previous: { model: model("gpt-6-luna"), thinkingLevel: "low" }, state: dueState,
+  }), ctx);
+  assert.equal(retained.model.id, "gpt-6-luna");
+  assert.equal(retained.thinkingLevel, "low");
+}
+failure = new Error("Synthetic escalation classifier failure");
+assert.equal((await router.route(request({ reason: "continuation", previous: sol, state: dueState }), ctx)).model.id, sol.model.id);
+failure = undefined;
+response = choice("unknown");
+assert.equal((await router.route(request({ reason: "continuation", previous: sol, state: dueState }), ctx)).model.id, sol.model.id);
+classifierAvailable = false;
+assert.equal((await router.route(request({ reason: "continuation", previous: sol, state: dueState }), ctx)).model.id, sol.model.id);
+classifierAvailable = true;
+
+response = choice("routine");
+const beforeErrorCheck = calls.length;
+ongoing = await router.route(request({ reason: "continuation", previous: sol, messages: stalledMessages }), ctx);
+assert.equal(calls.length, beforeErrorCheck + 1);
+ongoing = await router.route(request({ reason: "continuation", previous: sol, messages: stalledMessages, state: ongoing.state }), ctx);
+assert.equal(calls.length, beforeErrorCheck + 1);
+const newErrors = [...stalledMessages, ...stalledMessages.slice(-3)];
+await router.route(request({ reason: "continuation", previous: sol, messages: newErrors, state: ongoing.state }), ctx);
+assert.equal(calls.length, beforeErrorCheck + 2);
+const beforeSingleError = calls.length;
+await router.route(request({ reason: "continuation", previous: sol, messages: stalledMessages.slice(0, 3) }), ctx);
+assert.equal(calls.length, beforeSingleError);
+
+const beforeTimedCheck = calls.length;
+const tenMinutesAgo = Date.now() - 600_001;
+response = choice("very_complex");
+assert.equal((await router.route(request({
+  reason: "continuation", previous: sol,
+  state: { continuations: 0, startedAt: tenMinutesAgo, checkedAt: tenMinutesAgo, toolErrors: 0 },
+}), ctx)).model.id, "gpt-6-astra");
+assert.equal(calls.length, beforeTimedCheck + 1);
+assert.equal(calls.at(-1)?.context.state.elapsedMinutes, 10);
+for (const reason of ["direct", "retry"] as const) {
+  assert.equal((await router.route(request({ reason, previous: sol, state: dueState, messages: stalledMessages }), ctx)).model.id, sol.model.id);
+}
+assert.equal(calls.length, beforeTimedCheck + 1);
+
+missing.add("gpt-6-astra");
+assert.equal((await router.route(request({ reason: "continuation", previous: sol, state: dueState }), ctx)).model.id, sol.model.id);
+missing.clear();
+unauthenticated.add("gpt-6-astra");
+assert.equal((await router.route(request({ reason: "continuation", previous: sol, state: dueState }), ctx)).model.id, sol.model.id);
+unauthenticated.clear();
+
+const boundedHistory: ModelRouteRequest["messages"] = [
+  { role: "system", content: "PRIVATE_SYSTEM", timestamp: 0 },
+  ...Array.from({ length: 20 }, (_, index) => ({ role: "user" as const, content: `user-${index}:` + "x".repeat(2_000), timestamp: index })),
+  { role: "assistant", content: [
+    { type: "thinking", thinking: "PRIVATE_THINKING" },
+    { type: "toolCall", id: "call", name: "bash", arguments: { secret: "PRIVATE_ARGUMENT" } },
+    { type: "text", text: "visible progress" },
+  ], timestamp: 21 } as ModelRouteRequest["messages"][number],
+  { role: "toolResult", toolCallId: "call", toolName: "bash", content: [{ type: "text", text: "visible result" }],
+    details: { secret: "PRIVATE_DETAILS" }, isError: false, timestamp: 22 },
+];
+await router.route(request({ messages: boundedHistory }), ctx);
+const activity = calls.at(-1)?.context.state.recentActivity as string;
+assert.ok(activity.length <= 12_000);
+assert.doesNotMatch(activity, /PRIVATE_|user-0:/);
+assert.match(activity, /visible progress/);
+assert.match(activity, /tool bash \(result\): visible result/);
+response = choice("simple");
 
 const aborted = new AbortController();
 aborted.abort();
@@ -226,4 +350,16 @@ const brokenRecorder = {
 await assert.rejects(async () => router.route(request(), brokenRecorder), /usage persistence failure/);
 assert.equal(warnings.length, 1);
 
-console.log("ok: three levels, sticky calls, retries, rerouting, fallback, bounds, auth, cancellation, usage accounting");
+const beforeEscalationUsage = usageRecords.length;
+response = withUsage(choice("very_complex"));
+assert.equal((await router.route(request({ reason: "continuation", previous: sol, state: dueState }), ctx)).model.id, "gpt-6-astra");
+assert.equal(usageRecords.length, beforeEscalationUsage + 1);
+const canceledEscalation = new AbortController();
+onClassify = () => canceledEscalation.abort();
+await assert.rejects(async () => router.route(request({
+  reason: "continuation", previous: sol, state: dueState, signal: canceledEscalation.signal,
+}), ctx), { name: "AbortError" });
+onClassify = undefined;
+assert.equal(usageRecords.length, beforeEscalationUsage + 2);
+
+console.log("ok: three levels, escalation, cadence, history bounds, sticky calls, retries, rerouting, fallback, auth, cancellation, usage accounting");
