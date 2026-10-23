@@ -1,0 +1,465 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { homedir, tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
+
+// The repository intentionally has no node_modules. Make Pi's own extension
+// peers visible so the documented direct jiti command is self-contained.
+const require = createRequire(import.meta.url);
+const Module = require("node:module") as { _initPaths(): void };
+process.env.NODE_PATH = [
+	join(homedir(), ".pi", "agent", "npm", "node_modules"),
+	join(homedir(), ".npm-global", "lib", "node_modules", "@earendil-works", "pi-coding-agent", "node_modules"),
+	join(homedir(), ".npm-global", "lib", "node_modules"),
+	process.env.NODE_PATH,
+].filter(Boolean).join(delimiter);
+Module._initPaths();
+
+const { default: sidebarExtension, __test__ } = await import("./pi-sidebar.ts");
+const { visibleWidth } = await import("@earendil-works/pi-tui");
+
+const theme = {
+	fg: (_color: string, text: string) => text,
+	bold: (text: string) => text,
+};
+
+async function main(): Promise<void> {
+	assert.equal(typeof sidebarExtension, "function");
+
+	const stats = __test__.computeSessionStats([
+		{ type: "message", message: { role: "assistant", usage: { input: 10, output: 3, cacheRead: 5, cacheWrite: 2, cost: { total: 0.1 } } } },
+		{ type: "message", message: { role: "toolResult", usage: { input: 2, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.02 } } } },
+		{ type: "compaction", usage: { input: 4, output: 2, cacheRead: 1, cacheWrite: 0, cost: { total: 0.03 } } },
+		{ type: "compaction" },
+		{ type: "message", message: { role: "assistant", usage: { input: 20, output: 5, cacheRead: 10, cacheWrite: 0, cost: { total: 0.2 } } } },
+	]);
+	assert.deepEqual(stats, { turns: 2, compactions: 2, cost: 0.35000000000000003 });
+
+	const todos = __test__.replayTodos([
+		{ type: "message", message: { role: "toolResult", toolName: "todo", details: { tasks: [{ id: 1, subject: "old", status: "pending" }], nextId: 2 } } },
+		{ type: "message", message: { role: "toolResult", toolName: "todo", details: { tasks: [{ id: 1, subject: "done", status: "completed" }, { id: 2, subject: "removed", status: "deleted" }], nextId: 3 } } },
+	]);
+	assert.deepEqual(todos.map((todo) => [todo.subject, todo.status]), [["done", "completed"], ["removed", "deleted"]]);
+
+	const parsed = __test__.parseStatus("## main...origin/main\0 M src/long/file.ts\0R  src/new.ts\0src/old.ts\0?? task-worktree/\0");
+	assert.equal(parsed.branch, "main");
+	assert.equal(__test__.parseStatus("## No commits yet on trunk\0?? first.txt\0").branch, "trunk");
+	assert.deepEqual(parsed.files.map((file) => [file.status, file.path, file.oldPath]), [
+		["M", "src/long/file.ts", undefined],
+		["R", "src/new.ts", "src/old.ts"],
+		["??", "task-worktree/", undefined],
+	]);
+	const primary = join(tmpdir(), "repo");
+	const sibling = join(tmpdir(), "repo.task");
+	assert.deepEqual(__test__.parseWorktreePaths([
+		`worktree ${primary}`,
+		"HEAD abc123",
+		"branch refs/heads/main",
+		"",
+		`worktree ${sibling}`,
+		"HEAD def456",
+		"detached",
+		"locked reason",
+		"prunable gitdir file points to non-existent location",
+		"",
+		`worktree ${join(tmpdir(), "bare.git")}`,
+		"bare",
+		"",
+	].join("\0")), [primary, sibling]);
+	const workspaceRoot = join(tmpdir(), "workspace");
+	const nestedRoot = join(workspaceRoot, "enterprise");
+	const workspaceTask = join(tmpdir(), "workspace-task");
+	const nestedTask = join(tmpdir(), "workspace-enterprise-task");
+	const nestedInlineTask = join(nestedRoot, "task");
+	const duplicate = join(tmpdir(), "duplicate-worktree");
+	const targets = await __test__.enumerateWorktreeTargets(
+		[workspaceRoot, nestedRoot, nestedRoot],
+		["linked-root"],
+		async (owner) => owner === workspaceRoot
+			? [workspaceRoot, workspaceTask, duplicate]
+			: [nestedRoot, nestedTask, nestedInlineTask, duplicate],
+	);
+	assert.deepEqual(targets.map(({ owner, path, linkedWorktrees }) => [owner, path, linkedWorktrees]), [
+		[workspaceRoot, workspaceRoot, ["linked-root"]],
+		[workspaceRoot, workspaceTask, ["linked-root"]],
+		[workspaceRoot, duplicate, ["linked-root"]],
+		[nestedRoot, nestedRoot, ["task"]],
+		[nestedRoot, nestedTask, ["task"]],
+		[nestedRoot, nestedInlineTask, ["task"]],
+	]);
+	const failedTargets = await __test__.enumerateWorktreeTargets(
+		[workspaceRoot, nestedRoot],
+		[],
+		async (owner) => {
+			if (owner === nestedRoot) throw new Error("missing nested repository");
+			return [];
+		},
+	);
+	assert.deepEqual(failedTargets.map(({ owner, path }) => [owner, path]), [
+		[workspaceRoot, workspaceRoot],
+		[nestedRoot, nestedRoot],
+	]);
+	assert.deepEqual([...__test__.replayWorkedWorktrees([
+		{ type: "custom", customType: "other", data: { path: sibling } },
+		{ type: "custom", customType: "pi-sidebar-worktree-worked", data: { path: primary } },
+		{ type: "custom", customType: "pi-sidebar-worktree-worked", data: { path: 42 } },
+	])], [primary]);
+	const cleanRepo = { path: primary, label: "repo", branch: "main", files: [] };
+	const dirtyRepo = { ...cleanRepo, files: [{ status: "M", path: "file.ts", added: 1, removed: 0 }] };
+	const changedDirtyRepo = { ...cleanRepo, files: [{ status: "M", path: "file.ts", added: 2, removed: 0 }] };
+	const cleanBaseline = __test__.observeWorkedWorktrees([cleanRepo], [primary], new Map(), new Set());
+	assert.deepEqual(cleanBaseline.newlyWorked, []);
+	const cleanToDirty = __test__.observeWorkedWorktrees([dirtyRepo], [primary], cleanBaseline.signatures, new Set());
+	assert.deepEqual(cleanToDirty.newlyWorked, [primary]);
+	const dirtyBaseline = __test__.observeWorkedWorktrees([dirtyRepo], [primary], new Map(), new Set());
+	assert.deepEqual(dirtyBaseline.newlyWorked, []);
+	const nestedCleanRepo = { ...cleanRepo, path: nestedTask, label: "workspace-enterprise-task", branch: "task" };
+	const nestedBaseline = __test__.observeWorkedWorktrees([cleanRepo, nestedCleanRepo], [primary, nestedTask], new Map(), new Set());
+	const nestedDirtyRepo = { ...nestedCleanRepo, files: [{ status: "M", path: "nested.ts", added: 1, removed: 0 }] };
+	assert.deepEqual(
+		__test__.observeWorkedWorktrees([cleanRepo, nestedDirtyRepo], [primary, nestedTask], nestedBaseline.signatures, new Set()).newlyWorked,
+		[nestedTask],
+	);
+	const failedObservation = __test__.observeWorkedWorktrees([{ ...cleanRepo, error: "git failed" }], [primary], dirtyBaseline.signatures, new Set());
+	assert.deepEqual(failedObservation.newlyWorked, []);
+	assert.equal(failedObservation.signatures.get(primary), dirtyBaseline.signatures.get(primary));
+	assert.deepEqual(__test__.observeWorkedWorktrees([cleanRepo], [primary], dirtyBaseline.signatures, new Set()).newlyWorked, [primary]);
+	assert.deepEqual(__test__.observeWorkedWorktrees([changedDirtyRepo], [primary], dirtyBaseline.signatures, new Set()).newlyWorked, [primary]);
+	assert.deepEqual(__test__.observeWorkedWorktrees([changedDirtyRepo], [primary], dirtyBaseline.signatures, new Set([primary])).newlyWorked, []);
+	const deltas = __test__.parseNumstat([
+		"3\t1\tsrc/long/file.ts",
+		"-\t-\timage.png",
+		"2\t0\t",
+		"src/old.ts",
+		"src/new.ts",
+		"",
+	].join("\0"));
+	assert.deepEqual(deltas.get("src/long/file.ts"), { added: 3, removed: 1, binary: false });
+	assert.deepEqual(deltas.get("image.png"), { added: undefined, removed: undefined, binary: true });
+	assert.deepEqual(deltas.get("src/new.ts"), { added: 2, removed: 0, binary: false });
+	assert.equal(__test__.isInsideLinkedWorktree("task-worktree/", ["task-worktree"]), true);
+	assert.equal(__test__.isInsideLinkedWorktree("src/task-worktree.ts", ["task-worktree"]), false);
+	assert.equal(__test__.truncatePath("very/long/path/readable-file.ts", 16).endsWith("readable-file.ts"), true);
+	const safeStatus = __test__.cleanStatusText("\x1b[31mred\x1b[0m\x1b[2J\nnext");
+	assert.match(safeStatus, /\x1b\[31mred\x1b\[0m next/);
+	assert.doesNotMatch(safeStatus, /\x1b\[2J/);
+	assert.deepEqual(__test__.subagentRunsFromFleetStatus({
+		version: 1,
+		entries: [
+			{ key: "fleet-1", agent: "scout", role: "Research", startedAt: 1_000, tokens: { input: 10, output: 2, total: 12 } },
+			{ key: "fleet-2", agent: "reviewer", startedAt: 2_000, tokens: { input: 20, output: 4, total: 24 } },
+		],
+		totalActive: 2,
+		omitted: 0,
+	}), [
+		{ key: "rpc:fleet-1", agent: "scout", running: true, durationMs: 0, cost: 0 },
+		{ key: "rpc:fleet-2", agent: "reviewer", running: true, durationMs: 0, cost: 0 },
+	]);
+	assert.deepEqual(__test__.subagentRunsFromFleetStatus({ version: 1, entries: [], totalActive: 0, omitted: 0 }), []);
+	assert.equal(__test__.subagentRunsFromFleetStatus({ version: 2, entries: [] }), undefined);
+	assert.equal(__test__.subagentRunsFromFleetStatus({ version: 1, entries: [{ key: "fleet-1" }] }), undefined);
+	assert.deepEqual(__test__.runningForegroundSubagents({ progress: [
+		{ agent: "scout", status: "running" },
+		{ agent: "reviewer", label: "Review", status: "running" },
+		{ agent: "planner", status: "pending" },
+	] }), [
+		{ key: "foreground:0", agent: "scout", running: true, durationMs: 0, cost: 0 },
+		{ key: "foreground:1", agent: "reviewer", running: true, durationMs: 0, cost: 0 },
+	]);
+	assert.deepEqual(__test__.initialForegroundSubagents({ agent: "scout", async: false }), [
+		{ key: "foreground:0", agent: "scout", running: true, durationMs: 0, cost: 0 },
+	]);
+	assert.deepEqual(__test__.initialForegroundSubagents({ agent: "scout", clarify: true }), [
+		{ key: "foreground:0", agent: "scout", running: true, durationMs: 0, cost: 0 },
+	]);
+	assert.deepEqual(__test__.initialForegroundSubagents({ agent: "scout" }), []);
+	assert.deepEqual(__test__.initialForegroundSubagents({ agent: "scout", async: true }), []);
+	assert.deepEqual(__test__.initialForegroundSubagents({ workflowScript: "return []", async: false }), []);
+	assert.deepEqual(__test__.subagentRunsFromDetails({
+		results: [
+			{ agent: "worker", usage: { cost: 0.2 }, progressSummary: { durationMs: 60_000 } },
+			{ agent: "reviewer", totalCost: { costUsd: 0.03 }, progress: { status: "completed", durationMs: 5_000 } },
+		],
+		progress: [
+			{ agent: "worker", status: "running", durationMs: 65_000 },
+			{ agent: "reviewer", status: "completed", durationMs: 5_000 },
+		],
+	}, "foreground:call"), [
+		{ key: "foreground:call:0", agent: "worker", running: true, durationMs: 65_000, cost: 0.2 },
+		{ key: "foreground:call:1", agent: "reviewer", running: false, durationMs: 5_000, cost: 0.03 },
+	]);
+	assert.deepEqual(__test__.subagentRunsFromDetails({
+		results: [{
+			agent: "worker",
+			children: [{ id: "nested-1", agent: "tainted-evidence", state: "running", durationMs: 7_000, totalCost: { costUsd: 0.04 } }],
+		}],
+	}, "foreground:call"), [
+		{ key: "foreground:call:0", agent: "worker", running: false, durationMs: 0, cost: 0 },
+		{ key: "foreground:call:0:nested:0:nested-1", agent: "tainted-evidence", running: true, durationMs: 7_000, cost: 0.04 },
+	]);
+	const asyncStatus = {
+		lifecycleArtifactVersion: 2,
+		runId: "run-1",
+		sessionId: "session-1",
+		steps: [
+			{
+				agent: "worker",
+				status: "running",
+				startedAt: 1_000,
+				durationMs: 0,
+				totalCost: { costUsd: 0.1 },
+				children: [{ id: "nested-2", agent: "tainted-evidence", state: "complete", startedAt: 2_000, endedAt: 8_000, totalCost: { costUsd: 0.04 } }],
+			},
+			{ agent: "worker", status: "complete", durationMs: 60_000, totalCost: { costUsd: 0.2 } },
+			{ agent: "planner", status: "pending" },
+		],
+	};
+	const asyncRuns = [
+		{ key: "async:run-1:0", agent: "worker", running: true, durationMs: 10_000, cost: 0.1 },
+		{ key: "async:run-1:0:nested:0:nested-2", agent: "tainted-evidence", running: false, durationMs: 6_000, cost: 0.04 },
+		{ key: "async:run-1:1", agent: "worker", running: false, durationMs: 60_000, cost: 0.2 },
+	];
+	assert.deepEqual(__test__.subagentRunsFromAsyncStatus(asyncStatus, "run-1", "session-1", 11_000), asyncRuns);
+	assert.deepEqual(__test__.subagentRunsFromAsyncStatus({ ...asyncStatus, lifecycleArtifactVersion: 3 }, "run-1", "session-1", 11_000), asyncRuns);
+	assert.deepEqual(__test__.subagentRunsFromAsyncStatus({
+		runId: "workflow-1",
+		sessionId: "session-1",
+		mode: "workflow",
+		steps: [{ agent: "scout", status: "completed", durationMs: 88_498 }],
+		totalCost: { costUsd: 0.02439888 },
+	}, "workflow-1", "session-1"), [
+		{ key: "async:workflow-1:0", agent: "scout", running: false, durationMs: 88_498, cost: 0.02439888 },
+	]);
+	assert.equal(__test__.subagentRunsFromAsyncStatus({ runId: "run-1", sessionId: "session-1", mode: "single", steps: [] }, "run-1", "session-1"), undefined);
+	assert.equal(__test__.subagentRunsFromAsyncStatus({ runId: "run-1", sessionId: "session-1", mode: "workflow", steps: [{ agent: "worker" }] }, "run-1", "session-1"), undefined);
+	assert.equal(__test__.subagentRunsFromAsyncStatus({ lifecycleArtifactVersion: 2, runId: "run-1", sessionId: "other", steps: [] }, "run-1", "session-1"), undefined);
+	assert.equal(__test__.subagentRunsFromAsyncStatus({ lifecycleArtifactVersion: 1, runId: "run-1", sessionId: "session-1", steps: [] }, "run-1", "session-1"), undefined);
+	assert.equal(__test__.subagentRunsFromAsyncStatus({ lifecycleArtifactVersion: 2, runId: "wrong", sessionId: "session-1", steps: [] }, "run-1", "session-1"), undefined);
+	assert.equal(__test__.subagentRunsFromAsyncStatus({ lifecycleArtifactVersion: 2, runId: "run-1", sessionId: "session-1", steps: [{ agent: "worker", status: "complete", durationMs: -1 }] }, "run-1", "session-1"), undefined);
+	const aggregated = __test__.aggregateSubagents([
+		{ key: "one", agent: "worker", running: false, durationMs: 60_000, cost: 0.2337 },
+		{ key: "two", agent: "worker", running: true, durationMs: 46_000, cost: 0.2323 },
+		{ key: "three", agent: "reviewer", running: false, durationMs: 5_000, cost: 0.03 },
+	]);
+	assert.deepEqual(aggregated.map(({ cost: _cost, ...agent }) => agent), [
+		{ key: "worker", agent: "worker", running: true, durationMs: 106_000 },
+		{ key: "reviewer", agent: "reviewer", running: false, durationMs: 5_000 },
+	]);
+	assert.ok(Math.abs(aggregated[0]!.cost - 0.466) < 1e-12);
+	assert.equal(aggregated[1]!.cost, 0.03);
+	assert.equal(__test__.formatSubagentDuration(60_000), "1m");
+	assert.equal(__test__.formatSubagentDuration(106_000), "1m46s");
+	const replayedSubagents = __test__.replaySubagents([
+		{ type: "custom", customType: "pi-sidebar-subagent-run", data: { key: "one", agent: "worker", durationMs: 10_000, cost: 0.1 } },
+		{ type: "custom", customType: "pi-sidebar-subagent-run", data: { key: "one", agent: "worker", durationMs: 60_000, cost: 0.2 } },
+		{ type: "custom_message", customType: "subagent-slash-result", details: { requestId: "slash-1", result: { details: { asyncId: "run-1", asyncDir: "/tmp/run-1", results: [] } } } },
+	]);
+	assert.deepEqual([...replayedSubagents.runs.values()], [{ key: "one", agent: "worker", running: false, durationMs: 60_000, cost: 0.2 }]);
+	assert.deepEqual([...replayedSubagents.asyncRunDirs], [["run-1", "/tmp/run-1"]]);
+	const token = [
+		"header",
+		Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-123" } })).toString("base64url"),
+		"signature",
+	].join(".");
+	assert.equal(__test__.codexAccountId(token), "account-123");
+	assert.equal(__test__.codexAccountId("not-a-jwt"), undefined);
+	assert.deepEqual(__test__.parseCodexWeeklyQuota({
+		rate_limit: { primary_window: { used_percent: 17, limit_window_seconds: 604800, reset_at: 1_800_000_000 }, secondary_window: null },
+	}), { remaining: 83, resetAt: 1_800_000_000_000 });
+	assert.deepEqual(__test__.parseCodexWeeklyQuota({
+		rate_limit: {
+			primary_window: { used_percent: 5, limit_window_seconds: 18000 },
+			secondary_window: { used_percent: 120, limit_window_seconds: 604800 },
+		},
+	}), { remaining: 0, resetAt: undefined });
+	assert.equal(__test__.parseCodexWeeklyQuota({
+		rate_limit: { primary_window: { used_percent: 10, limit_window_seconds: 18000 } },
+	}), undefined);
+	assert.equal(__test__.formatQuotaReset(6.5 * 86_400_000, 0), "6d");
+	assert.equal(__test__.formatQuotaReset(23 * 3_600_000, 0), "23h");
+
+	const root = await mkdtemp(join(tmpdir(), "pi-sidebar-"));
+	try {
+		await mkdir(join(root, "nested", ".git"), { recursive: true });
+		await mkdir(join(root, "worktree"), { recursive: true });
+		await writeFile(join(root, "worktree", ".git"), "gitdir: elsewhere\n");
+		await mkdir(join(root, "node_modules", "ignored", ".git"), { recursive: true });
+		const discovery = await __test__.discoverRepositories(root);
+		assert.deepEqual(discovery.repos, [join(root, "nested")]);
+		assert.deepEqual(discovery.linkedWorktrees, ["worktree"]);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+
+	class Terminal {
+		rows = 8;
+		width = 120;
+		writes: string[] = [];
+		get columns(): number { return this.width; }
+		write(data: string): void { this.writes.push(data); }
+	}
+	const terminal = new Terminal();
+	let renders = 0;
+	const tui = {
+		terminal,
+		doRender() { renders++; },
+		requestRender() {},
+		stopped: false,
+	};
+	const originalRender = tui.doRender;
+	const state: any = {
+		enabled: true,
+		width: 48,
+		thinkingLevel: "high",
+		stats: { cost: 0, turns: 0, compactions: 2 },
+		todos: [],
+		gitRepos: [],
+		linkedWorktrees: [],
+		workedWorktrees: new Set(),
+		subagentRuns: new Map(),
+		asyncRunDirs: new Map(),
+		rpcSubagentRuns: new Map(),
+		foregroundSubagents: new Map(),
+		context: { tokens: 83_000, contextWindow: 100_000, percent: 83 },
+	};
+	const compositor = new __test__.SidebarCompositor(tui as never, () => state as never, () => theme as never, () => new Map());
+	assert.equal(compositor.install(), true);
+	assert.equal(terminal.columns, 71);
+	tui.doRender();
+	assert.equal(renders, 1);
+	assert.match(terminal.writes.join(""), /\x1b\[\?2026h/);
+	terminal.writes = [];
+	tui.stopped = true;
+	compositor.paint();
+	assert.deepEqual(terminal.writes, []);
+	tui.stopped = false;
+	state.enabled = false;
+	assert.equal(terminal.columns, 120);
+	compositor.paint();
+	assert.deepEqual(terminal.writes, []);
+	state.enabled = true;
+	terminal.width = 100;
+	assert.equal(terminal.columns, 100);
+	compositor.paint();
+	assert.deepEqual(terminal.writes, []);
+	terminal.width = 120;
+	assert.equal(terminal.columns, 71);
+	state.width = 40;
+	assert.equal(terminal.columns, 79);
+	state.width = 48;
+	compositor.dispose();
+	assert.equal(terminal.columns, 120);
+	assert.equal(tui.doRender, originalRender);
+
+	state.rootRepo = "/repo";
+	state.gitRepos = [{
+		path: "/repo",
+		label: "repo\x1b[2J",
+		branch: "main\nspoofed",
+		files: [{ status: "M", path: "src/evil\x1b[2J\nname.ts", added: 1, removed: 0 }],
+	}, {
+		path: "/outside/repo",
+		label: "repo",
+		branch: "clean-sibling",
+		files: [],
+	}];
+	const render = (width = 48, height = 100, statuses = new Map<string, string>(), palette = theme) =>
+		__test__.renderSidebar(state as never, palette as never, statuses, width, height);
+	const plain = () => render().map((line) => line.trim()).join("\n");
+	const lines = render(48, 24);
+	assert.ok(lines.length <= 24);
+	assert.ok(lines.every((line) => visibleWidth(line) <= 48 && !line.includes("\n")));
+	assert.ok(lines.every((line) => line.startsWith("  ")));
+	assert.match(plain(), /╭─ SESSION ─+╮/);
+	assert.match(plain(), /CONTEXT +83\.0%\n━{37}┄{7}\n83k \/ 100k tokens/);
+	assert.match(plain(), /0 +\$0\.000 +2\nTURNS +COST +COMPACTIONS/);
+	assert.match(plain(), /ACTIVITY/);
+	assert.match(plain(), /No tasks or agents yet/);
+	assert.doesNotMatch(plain(), /SUBAGENTS|TASKS 0\/0|none used|no todos/);
+	assert.doesNotMatch(plain(), /\x1b\[2J|clean-sibling/);
+	assert.match(plain(), /• main spoofed +1 changed/);
+	state.context = { tokens: 110_000, contextWindow: 100_000, percent: 110 };
+	assert.match(plain(), /CONTEXT +110\.0%\n━{44}/);
+	state.context = { tokens: 83_000, contextWindow: 100_000, percent: 83 };
+	assert.doesNotMatch(render(48, 100, new Map([["mcp", "MCP connected"], ["mcp-auth", "MCP auth"]])).join("\n"), /MCP/);
+	const statuses = new Map([["ponytail", "⚡ FULL"], ["quota", "7d:2% left (in 5d 23h 41m) cap:OK"], ["unsafe\x1b[2J", "\x1b[32mready\x1b[0m\x1b[2J\nnext"]]);
+	const statusLines = render(48, 100, statuses);
+	assert.match(statusLines.join("\n"), /ponytail\n +⚡ FULL/);
+	assert.match(statusLines.join("\n"), /quota\n +7d:2% left/);
+	assert.doesNotMatch(statusLines.join("\n"), /\x1b\[2J/);
+
+	state.subagentRuns.set("async:run:0", { key: "async:run:0", agent: "scout\x1b[2J\nspoofed", running: false, durationMs: 60_000, cost: 0.2337 });
+	state.rpcSubagentRuns.set("rpc:fleet-1", { key: "rpc:fleet-1", agent: "scout spoofed", running: true, durationMs: 0, cost: 0 });
+	const colorTheme = {
+		...theme,
+		fg: (color: string, text: string) => `\x1b[${color === "success" ? 32 : color === "error" ? 31 : 37}m${text}\x1b[0m`,
+	};
+	const subagentLines = render(48, 40, new Map(), colorTheme).join("\n");
+	assert.match(subagentLines, /\x1b\[31m━/);
+	assert.match(subagentLines, /\x1b\[32m●/);
+	assert.match(subagentLines, /scout spoofed/);
+	assert.match(subagentLines, /Stopped · 1m · \$0\.2337/);
+	assert.doesNotMatch(subagentLines, /\x1b\[2J/);
+	state.rpcSubagentRuns.clear();
+	assert.match(render(48, 40, new Map(), colorTheme).join("\n"), /\x1b\[31m●/);
+	state.subagentRuns.set("async:run:0", { ...state.subagentRuns.get("async:run:0"), running: true });
+	assert.match(render(48, 40, new Map(), colorTheme).join("\n"), /\x1b\[32m●/);
+	state.subagentRuns.clear();
+	state.ctx = { cwd: "/repo", model: { id: "gpt-5.6", provider: "openai-codex" } };
+	state.codexWeeklyQuota = { remaining: 83, resetAt: Date.now() + 6.5 * 86_400_000 };
+	assert.match(plain(), /WEEKLY CODEX +83% left\n━{37}┄{7}\nResets in 6d/);
+	state.codexWeeklyQuota = undefined;
+	assert.match(plain(), /Loading account quota…/);
+	state.codexWeeklyQuota = null;
+	assert.match(plain(), /Account quota unavailable/);
+	state.ctx.model.provider = "anthropic";
+	assert.doesNotMatch(plain(), /WEEKLY CODEX/);
+	state.gitRepos = [{ path: "/repo", label: "repo", branch: "main", files: [] }, {
+		path: "/outside/repo",
+		label: "outside/repo",
+		branch: "clean-sibling",
+		files: [],
+	}];
+	assert.match(plain(), /repo\n• main\nclean/);
+	assert.doesNotMatch(plain(), /clean-sibling/);
+	state.workedWorktrees.add("/outside/repo");
+	assert.match(plain(), /clean-sibling/);
+	state.workedWorktrees.clear();
+	state.gitRepos = [{ path: "/repo", label: "repo", branch: "?", files: [], error: "git status failed" }];
+	assert.match(plain(), /git status failed/);
+
+	state.title = "Alternatives to LayerFS and Furrow — 日本語 🐴 ".repeat(5) + "\x1b[2J";
+	state.todos = [
+		{ id: 1, subject: "Inspect the layout", status: "completed" },
+		{ id: 2, subject: "Build the dashboard", activeForm: "building", status: "in_progress" },
+		{ id: 3, subject: "Verify Unicode 日本語 🐴", status: "pending" },
+		{ id: 4, subject: "Hidden task", status: "deleted" },
+	];
+	state.subagentRuns.set("worker", { key: "worker", agent: "worker", running: true, durationMs: 106_000, cost: 0.466 });
+	assert.match(plain(), /TASKS 1\/3/);
+	assert.match(plain(), /✓ Inspect the layout/);
+	assert.match(plain(), /● Build the dashboard \(building\)/);
+	assert.match(plain(), /○ Verify Unicode/);
+	assert.doesNotMatch(plain(), /Hidden task|ACTIVITY/);
+	assert.match(plain(), /SUBAGENTS/);
+	assert.match(plain(), /Running · 1m46s · \$0\.4660/);
+	for (const width of [20, 40, 53, 80]) {
+		for (const height of [1, 12, 24, 45, 100]) {
+			for (const palette of [theme, colorTheme]) {
+				const output = render(width, height, statuses, palette);
+				assert.ok(output.length <= height, `height ${width}×${height}`);
+				assert.ok(output.every((line) => visibleWidth(line) <= width && !line.includes("\n")), `width ${width}×${height}`);
+				assert.doesNotMatch(output.join("\n"), /\x1b\[2J/);
+			}
+		}
+	}
+	assert.match(render(20).join("\n"), /TURNS +0\n +COST +\$0\.000\n +COMPACTIONS +2/);
+	assert.match(render(40, 34, statuses).join("\n"), /… \d+ more/);
+	state.context = { tokens: null, contextWindow: 100_000, percent: null };
+	assert.match(plain(), /CONTEXT +—\n┄{44}\n\? \/ 100k tokens/);
+	state.context = undefined;
+	assert.match(plain(), /Waiting for context usage/);
+}
+
+await main();
