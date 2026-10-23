@@ -28,7 +28,7 @@ Use this repository's path in your settings. Paths can start with `~`. Keep exis
 
 ## Message timestamps
 
-The `pi-message-timestamps` extension keeps timestamps for user messages. Assistant timestamps follow visible rendered content. Hidden activity has no timestamp. Old orphan assistant timestamp entries stay in session history, but the extension hides them. The extension does not depend on minimalist settings.
+The `pi-message-timestamps` extension keeps timestamps for user messages. Assistant timestamps follow visible rendered content, with a blank line above and below each timestamp. Hidden activity has no timestamp. Old orphan assistant timestamp entries stay in session history, but the extension hides them. The extension does not depend on minimalist settings.
 
 After updating the installed local extension, reload each open Pi session:
 

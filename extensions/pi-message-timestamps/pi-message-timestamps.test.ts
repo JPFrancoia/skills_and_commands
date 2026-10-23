@@ -81,8 +81,7 @@ const message = {
 initTheme("dark");
 const component = new AssistantMessageComponent(message as any);
 const lines = component.render(80);
-assert.match(plain(lines), /── 03:04:05 ──\n/);
-assert.match(plain(lines), /Visible answer/);
+assert.match(plain(lines), /^\n── 03:04:05 ──\n\n[ \t]*Visible answer/);
 assert.equal(plain(lines).match(/03:04:05/g)?.length, 1);
 assert.ok(lines[0].includes("\x1b]133;A\x07"), "preserve terminal prompt markers");
 assert.ok(component.render(5).every((line) => visibleWidth(line) <= 5), "respect narrow terminal widths");
@@ -113,7 +112,7 @@ for (const timestampsFirst of [true, false]) {
 	hidden = false;
 	__test__.patchAssistantTimestamps(proto);
 	assert.equal(plain(instance.render(80)).match(/03:04:05/g)?.length, 1, "reload must not add duplicate timestamps");
-	assert.equal(instance.render(80).length, 2, "preserve mouse coordinates by keeping the original line count");
+	assert.deepEqual(instance.render(80), ["", "── 03:04:05 ──", "", "Visible answer"], "keep blank lines above and below the timestamp");
 }
 
 console.log("ok");

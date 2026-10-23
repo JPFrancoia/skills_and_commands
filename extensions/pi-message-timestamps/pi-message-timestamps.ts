@@ -34,9 +34,9 @@ function patchAssistantTimestamps(proto: AssistantRenderer): void {
 		const theme = state.getTheme?.();
 		if (!theme || !this.lastMessage || !lines.some((line) => stripTerminalSequences(line).trim())) return lines;
 		if (stripTerminalSequences(lines[0]).trim()) return lines;
-		// Reuse Pi's blank separator so folding and mouse coordinates stay unchanged.
+		// Keep Pi's blank separator above the timestamp for visual space after activity summaries.
 		const header = theme.fg("dim", `── ${formatTime(this.lastMessage.timestamp)} ──`);
-		return [truncateToWidth(lines[0] + header, width), ...lines.slice(1)];
+		return [lines[0], truncateToWidth(header, width), "", ...lines.slice(1)];
 	};
 	marked[PATCHED] = true;
 }
