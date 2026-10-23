@@ -26,6 +26,16 @@ The package manifest declares the extension entry point. Pi settings can load th
 
 Use this repository's path in your settings. Paths can start with `~`. Keep existing package entries and their resource filters.
 
+## Message timestamps
+
+The `pi-message-timestamps` extension keeps timestamps for user messages. Assistant timestamps follow visible rendered content. Hidden activity has no timestamp. Old orphan assistant timestamp entries stay in session history, but the extension hides them. The extension does not depend on minimalist settings.
+
+After updating the installed local extension, reload each open Pi session:
+
+```text
+/reload
+```
+
 ## Load prompt files
 
 This setup loads prompts and agents from the local paths in `settings.json`. It no longer uses agent or prompt symlinks.
