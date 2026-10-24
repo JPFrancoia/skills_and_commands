@@ -22,7 +22,7 @@ The router normally keeps the selected model during tool continuations. It reass
 
 These thresholds trigger a check, not a forced upgrade. Checks happen before a model request, not during a running tool. New user requests always trigger classification.
 
-The classifier considers repeated failures, repeated unsuccessful fixes, circular investigation, user corrections, and stalled progress. Productive long work, one ordinary error, external waiting, or missing credentials alone do not justify Astra. The elapsed time is supporting context, not a deadline.
+The classifier prefers Sol when the required capability is unclear. Ordinary debugging, recurring errors, or user corrections alone do not justify Astra. Astra is for clearly exceptional reasoning needs or persistent failure after meaningfully different approaches. Persistent failure must show that stronger reasoning is needed. Productive long work, external waiting, or missing credentials alone do not justify Astra. Elapsed time is supporting context, not a deadline.
 
 During a continuation, the router changes to Astra only when the classifier selects Astra. Otherwise, it keeps the current model and thinking level, including when classification fails or returns an unusable result. Astra stays selected for the rest of the run. A new user request triggers classification again for any tier.
 

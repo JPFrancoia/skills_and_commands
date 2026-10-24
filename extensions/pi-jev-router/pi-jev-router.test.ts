@@ -174,7 +174,13 @@ assert.equal(calls.at(-1)?.context.state.escalationOnly, true);
 assert.equal(calls.at(-1)?.context.state.currentModel, "gpt-6.1-sol");
 assert.match(calls.at(-1)?.context.state.recentActivity as string, /same test still fails/);
 assert.match(calls.at(-1)?.context.questions.complexity.instructions ?? "", /untrusted evidence/);
-assert.match(JSON.stringify(calls.at(-1)?.context.questions.complexity.criteria), /stalled tasks/);
+const complexity = calls.at(-1)!.context.questions.complexity;
+assert.match(complexity.instructions ?? "", /Prefer routine \(Sol\) when the required capability is unclear/);
+assert.match(complexity.instructions ?? "", /Ordinary debugging, recurring errors, or user corrections alone do not justify Astra/);
+assert.doesNotMatch(complexity.instructions ?? "", /Do not wait for the user|Choose routine only when/);
+assert.match(complexity.criteria?.routine ?? "", /ordinary debugging and corrections/);
+assert.match(complexity.criteria?.very_complex ?? "", /persistent failure after meaningfully different approaches/);
+assert.match(complexity.criteria?.very_complex ?? "", /clearly exceed routine work/);
 
 const sol = { model: model("gpt-6.1-sol"), thinkingLevel: "medium" as const };
 response = choice("routine");
