@@ -197,7 +197,7 @@ function renderSummary(
 
   ctx.ui.setWidget(WIDGET_KEY, (_tui, theme) => {
     const line = (label: string, value: string) =>
-      `${theme.fg("accent", theme.bold(`${label}:`))} ${value}`;
+      `${theme.fg("warning", theme.bold(`${label}:`))} ${value}`;
     return new Text(
       [line("Now", summary.now), line("Why", summary.why)].join("\n"),
       0,
