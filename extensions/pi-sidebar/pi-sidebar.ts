@@ -16,14 +16,17 @@ import { homedir } from "node:os";
 import { basename, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { fetchOpenRequestCounts, parseRepos, type OpenRequestCount } from "../pi-open/repos.ts";
 
 const DEFAULT_WIDTH = 53;
 const MIN_MAIN_WIDTH = 70;
 const REFRESH_TICKS = 15;
+const REQUEST_REFRESH_MS = 5 * 60_000;
 const TODO_WIDGET_KEY = "rpiv-todos";
 const WORKED_WORKTREE_ENTRY = "pi-sidebar-worktree-worked";
 const SUBAGENT_RUN_ENTRY = "pi-sidebar-subagent-run";
 const SUBAGENT_ASYNC_ENTRY = "pi-sidebar-subagent-async";
+const QUOTA_STATUS_KEYS = new Set(["pi-quotas-usage", "pi-quotas-token-status"]);
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const SUBAGENT_RPC_REQUEST_EVENT = "subagents:rpc:v1:request";
 const SUBAGENT_RPC_REPLY_PREFIX = "subagents:rpc:v1:reply:";
@@ -101,9 +104,11 @@ type SidebarState = {
 	ctx?: ExtensionContext;
 	title?: string;
 	thinkingLevel: string;
+	routedModel?: { id: string; thinkingLevel?: string };
 	stats: SessionStats;
 	todos: TodoTask[];
 	gitRepos: GitRepo[];
+	openRequests?: { repos: OpenRequestCount[]; errors: string[] };
 	rootRepo?: string;
 	linkedWorktrees: string[];
 	workedWorktrees: Set<string>;
@@ -700,11 +705,13 @@ function formatQuotaReset(resetAt: number, now = Date.now()): string {
 }
 
 function usageBar(theme: Theme, value: number, width: number, filledIsBad = false): string {
-	const filled = Math.max(0, Math.min(width, Math.round((value / 100) * width)));
+	const units = Math.round((Math.max(0, Math.min(100, value)) / 100) * width * 8);
+	const filled = Math.floor(units / 8);
+	const partial = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"][units % 8]!;
 	const color = filledIsBad
 		? value >= 80 ? "error" : value >= 50 ? "warning" : "success"
 		: value <= 20 ? "error" : value <= 50 ? "warning" : "success";
-	return `${theme.fg(color, "━".repeat(filled))}${theme.fg("borderMuted", "┄".repeat(width - filled))}`;
+	return `${theme.fg(color, "█".repeat(filled) + partial)}${theme.fg("borderMuted", "░".repeat(width - filled - (partial ? 1 : 0)))}`;
 }
 
 function padAnsi(text: string, width: number): string {
@@ -742,55 +749,77 @@ function fitSection(
 	lines.push(...section(theme, title, shown, width));
 }
 
-function renderCore(state: SidebarState, theme: Theme, width: number): string[] {
+function getRoutedModel(ctx: ExtensionContext, messages = ctx.sessionManager.buildSessionProjection().messages): SidebarState["routedModel"] {
+	if (ctx.model?.api !== "pi-virtual") return undefined;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i]!;
+		if (message.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted") continue;
+		const model = ctx.modelRegistry.find(message.provider, message.model);
+		return model && model.api !== "pi-virtual" ? { id: model.id, thinkingLevel: message.thinkingLevel } : undefined;
+	}
+	return undefined;
+}
+
+function quotaRemaining(status: string): number | undefined {
+	// Footer percentages describe remaining quota, including compact synthetic windows.
+	const values = [...sanitizePlainText(status).matchAll(/(?:^|[\s:])(\d+(?:\.\d+)?)%(?=\s|$)/g)]
+		.map((match) => Number(match[1]))
+		.filter((value) => Number.isFinite(value) && value >= 0 && value <= 100);
+	return values.length ? Math.min(...values) : undefined;
+}
+
+function renderCore(state: SidebarState, theme: Theme, width: number, statuses: ReadonlyMap<string, string>): string[] {
 	const model = state.ctx?.model;
-	const cardWidth = width - 4;
-	const title = wrapTextWithAnsi(sanitizePlainText(state.title || "Untitled session"), cardWidth);
+	const title = wrapTextWithAnsi(sanitizePlainText(state.title || "Untitled session"), width);
 	const titleLines = title.slice(0, 2);
-	if (title.length > 2) titleLines[1] = truncateToWidth(`${titleLines[1]}…`, cardWidth, "…");
-	const location = truncatePath(sanitizePlainText(collapseHome(state.ctx?.cwd ?? "")), cardWidth);
-	const border = (text: string) => theme.fg("borderMuted", text);
-	const cardLine = (text: string) => `${border("│")} ${padAnsi(text, cardWidth)} ${border("│")}`;
+	if (title.length > 2) titleLines[1] = truncateToWidth(`${titleLines[1]}…`, width, "…");
+	let modelLine = model ? `(${model.provider}) ${model.id}` : "No model selected";
+	if (model?.reasoning) modelLine += state.thinkingLevel === "off" ? " • thinking off" : ` • ${state.thinkingLevel}`;
+	if (model?.api === "pi-virtual" && state.routedModel) {
+		modelLine += ` → ${state.routedModel.id}${state.routedModel.thinkingLevel ? ` • ${state.routedModel.thinkingLevel}` : ""}`;
+	}
+	const row = (label: string, text: string, labelWidth = 6) =>
+		wrapTextWithAnsi(text, Math.max(1, width - labelWidth)).map((line, index) =>
+			`${theme.fg("muted", padAnsi(index === 0 ? label : "", labelWidth))}${line}`);
+	const barWidth = Math.min(14, Math.max(2, width - 22));
+	const meter = (label: string, value: number | null | undefined, text: string, filledIsBad = false) => {
+		const bar = value == null ? theme.fg("borderMuted", "░".repeat(barWidth)) : usageBar(theme, value, barWidth, filledIsBad);
+		const details = wrapTextWithAnsi(text, Math.max(1, width - 7 - barWidth));
+		return [
+			`${theme.fg("muted", label.padEnd(6))}${bar} ${details[0]}`,
+			...details.slice(1).map((line) => `${" ".repeat(7 + barWidth)}${line}`),
+		];
+	};
 	const usage = state.context;
+	const contextText = usage
+		? `${theme.bold(usage.percent == null ? "—" : `${usage.percent.toFixed(1)}%`)} • ${usage.tokens === null ? "?" : formatNumber(usage.tokens)} / ${formatNumber(usage.contextWindow)}`
+		: "—";
+	const usageStatus = cleanStatusText((statuses.get("pi-quotas-usage") ?? "").replace(/cap:((?:\x1b\[[0-9;:]*m)*)OK\b/g, "$1"));
+	const codex = model?.provider === "openai-codex";
+	const quota = codex ? state.codexWeeklyQuota : undefined;
+	const remaining = quota?.remaining ?? quotaRemaining(usageStatus);
 	const lines = [
+		...titleLines.map((line) => theme.fg("text", theme.bold(line))),
+		...row("model", theme.fg("accent", sanitizePlainText(modelLine))),
+		...row("cwd", theme.fg("dim", truncatePath(sanitizePlainText(collapseHome(state.ctx?.cwd ?? "")), width - 6) || "—")),
+		...row("🧹 compactions", theme.fg("text", String(state.stats.compactions)), 15),
+		...row("🔄 turns", theme.fg("text", String(state.stats.turns)), 15),
+		...row("💰 cost", theme.fg("text", `$${state.stats.cost.toFixed(3)}`), 15),
 		"",
-		`${border("╭─ ")}${theme.fg("accent", theme.bold("SESSION"))}${border(` ${"─".repeat(Math.max(0, width - 12))}╮`)}`,
-		...titleLines.map((line) => cardLine(theme.fg("text", theme.bold(line)))),
-		cardLine(theme.fg("muted", location || "—")),
-		border(`╰${"─".repeat(width - 2)}╯`),
-		"",
-		columns(theme.fg("muted", "MODEL"), theme.fg("accent", `THINKING ${sanitizePlainText(state.thinkingLevel).toUpperCase()}`), width),
-		theme.fg("text", theme.bold(sanitizePlainText(model?.id ?? "No model selected"))),
-		theme.fg("dim", sanitizePlainText(model?.provider ?? "")),
-		"",
-		columns(theme.fg("muted", "CONTEXT"), theme.fg("text", theme.bold(usage?.percent == null ? "—" : `${usage.percent.toFixed(1)}%`)), width),
-		usage?.percent == null ? theme.fg("borderMuted", "┄".repeat(width)) : usageBar(theme, usage.percent, width, true),
-		theme.fg("dim", usage ? `${usage.tokens === null ? "?" : formatNumber(usage.tokens)} / ${formatNumber(usage.contextWindow)} tokens` : "Waiting for context usage"),
+		...meter("ctx", usage?.percent, theme.fg("text", contextText), true),
 	];
-	if (model?.provider === "openai-codex") {
-		const quota = state.codexWeeklyQuota;
-		lines.push("", columns(theme.fg("muted", "WEEKLY CODEX"), theme.fg("text", quota == null ? "—" : `${Math.round(quota.remaining)}% left`), width));
-		if (quota == null) {
-			lines.push(theme.fg("warning", quota === undefined ? "Loading account quota…" : "Account quota unavailable"));
-		} else {
-			lines.push(usageBar(theme, quota.remaining, width));
-			if (quota.resetAt !== undefined) lines.push(theme.fg("dim", `Resets in ${formatQuotaReset(quota.resetAt)}`));
-		}
+	if (!usage) lines.push(...row("", theme.fg("dim", "Waiting for context usage")));
+	lines.push("", ...meter("quota", remaining, quota ? theme.fg("text", `${theme.bold(`${Math.round(quota.remaining)}% left`)} • Codex 7d`) : usageStatus || theme.fg("dim", "—")));
+	if (quota?.resetAt !== undefined) {
+		lines.push(...row("", theme.fg("dim", `Resets in ${formatQuotaReset(quota.resetAt)}`)));
+	} else if (codex && remaining === undefined) {
+		lines.push(...row("", theme.fg("warning", quota === undefined ? "Loading account quota…" : "Account quota unavailable")));
 	}
-	const metrics = [
-		[String(state.stats.turns), "TURNS"],
-		[`$${state.stats.cost.toFixed(3)}`, "COST"],
-		[String(state.stats.compactions), "COMPACTIONS"],
-	];
-	lines.push("");
-	if (width >= 35) {
-		const cellWidth = Math.floor(width / 3);
-		lines.push(metrics.map(([value]) => padAnsi(theme.fg("text", theme.bold(truncateToWidth(value!, cellWidth - 1, "…"))), cellWidth)).join(""));
-		lines.push(metrics.map(([, label]) => padAnsi(theme.fg("dim", label!), cellWidth)).join(""));
-	} else {
-		lines.push(...metrics.map(([value, label]) => columns(theme.fg("dim", label!), theme.fg("text", value!), width)));
+	for (const key of QUOTA_STATUS_KEYS) {
+		const text = key === "pi-quotas-usage" ? usageStatus : cleanStatusText(statuses.get(key) ?? "");
+		if (text && (key !== "pi-quotas-usage" || quota)) lines.push(...row("", text));
 	}
-	return lines;
+	return section(theme, "Conversation", lines, width);
 }
 
 function subagentItems(state: SidebarState, theme: Theme): string[] {
@@ -822,7 +851,7 @@ function todoItems(state: SidebarState, theme: Theme): { title: string; items: s
 
 function extensionItems(theme: Theme, statuses: ReadonlyMap<string, string>, width: number): string[] {
 	return [...statuses.entries()]
-		.filter(([key, text]) => key !== "mcp" && key !== "mcp-auth" && cleanStatusText(text) !== "")
+		.filter(([key, text]) => key !== "mcp" && key !== "mcp-auth" && !QUOTA_STATUS_KEYS.has(key) && cleanStatusText(text) !== "")
 		.sort(([a], [b]) => a.localeCompare(b))
 		.flatMap(([key, text]) => [
 			theme.fg("muted", sanitizePlainText(key)),
@@ -831,6 +860,23 @@ function extensionItems(theme: Theme, statuses: ReadonlyMap<string, string>, wid
 }
 
 function gitItems(state: SidebarState, theme: Theme, width: number): string[] {
+	if (state.openRequests) {
+		const items = state.openRequests.repos.filter(({ count }) => count !== 0).flatMap(({ repo, count, breakdown, error }) => {
+			const badge = error ? "unavailable" : count === undefined ? "loading…" : `(${count})`;
+			const path = truncatePath(sanitizePlainText(repo.path), Math.max(1, width - visibleWidth(badge) - 1));
+			return [
+				`${theme.fg("accent", theme.bold(path))} ${theme.fg(error ? "warning" : "muted", theme.bold(badge))}`,
+				...(breakdown ? wrapTextWithAnsi([
+					breakdown.drafts ? theme.fg("dim", `${breakdown.drafts} draft`) : "",
+					breakdown.passing ? theme.fg("success", `${breakdown.passing} CI ✓`) : "",
+					breakdown.notPassing ? theme.fg("warning", `${breakdown.notPassing} CI !`) : "",
+				].filter(Boolean).join(theme.fg("dim", " · ")), width) : []),
+				...(error ? wrapTextWithAnsi(theme.fg("warning", sanitizePlainText(error)), width) : []),
+			];
+		});
+		items.push(...state.openRequests.errors.flatMap((error) => wrapTextWithAnsi(theme.fg("warning", sanitizePlainText(error)), width)));
+		return items.length ? items : [theme.fg("dim", state.openRequests.repos.length ? "No open PRs or MRs" : "No repositories in REPOS")];
+	}
 	if (!state.rootRepo) return [theme.fg("dim", "(not a git repository)")];
 	if (state.gitRepos.length === 0) return [theme.fg("dim", "(refreshing…)")];
 	const items: string[] = [];
@@ -880,12 +926,12 @@ function renderSidebar(
 	height: number,
 ): string[] {
 	const contentWidth = Math.max(8, width - 4);
-	const lines = renderCore(state, theme, contentWidth);
+	const lines = renderCore(state, theme, contentWidth, statuses);
 	const agents = subagentItems(state, theme);
 	const todos = todoItems(state, theme);
 	const extensions = extensionItems(theme, statuses, contentWidth);
 	const git = gitItems(state, theme, contentWidth);
-	const gitReserve = state.rootRepo ? 5 : 3;
+	const gitReserve = state.openRequests?.repos.length || state.rootRepo ? 5 : 3;
 	const extensionReserve = extensions.length ? 4 : 0;
 	fitSection(lines, theme, "Subagents", agents, contentWidth, height, gitReserve + extensionReserve + (todos.items.length ? 3 : 0));
 	fitSection(lines, theme, todos.title, todos.items, contentWidth, height, gitReserve + extensionReserve);
@@ -1031,6 +1077,7 @@ export const __test__ = {
 	computeSessionStats,
 	formatQuotaReset,
 	parseCodexWeeklyQuota,
+	quotaRemaining,
 	discoverRepositories,
 	isInsideLinkedWorktree,
 	observeWorkedWorktrees,
@@ -1039,6 +1086,7 @@ export const __test__ = {
 	parseStatus,
 	parseWorktreePaths,
 	enumerateWorktreeTargets,
+	getRoutedModel,
 	renderSidebar,
 	runningForegroundSubagents,
 	initialForegroundSubagents,
@@ -1055,6 +1103,7 @@ export const __test__ = {
 };
 
 export default function sidebarExtension(pi: ExtensionAPI) {
+	const configuredRepos = process.env.REPOS === undefined ? undefined : parseRepos(process.env.REPOS);
 	const state: SidebarState = {
 		enabled: true,
 		width: DEFAULT_WIDTH,
@@ -1062,6 +1111,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 		stats: { ...EMPTY_STATS },
 		todos: [],
 		gitRepos: [],
+		openRequests: configuredRepos && { repos: configuredRepos.repos.map((repo) => ({ repo })), errors: configuredRepos.errors },
 		linkedWorktrees: [],
 		workedWorktrees: new Set(),
 		subagentRuns: new Map(),
@@ -1081,6 +1131,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 	let discoveryCache: { root: string; value: RepoDiscovery } | undefined;
 	let worktreeSignatures = new Map<string, string>();
 	let generation = 0;
+	let requestCountsRefreshedAt = 0;
 	let subagentRequestSequence = 0;
 
 	const statuses = () => footerData?.getExtensionStatuses() ?? new Map<string, string>();
@@ -1092,6 +1143,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 		state.stats = computeSessionStats(ctx.sessionManager.getEntries());
 		state.todos = replayTodos(ctx.sessionManager.getBranch());
 		state.context = ctx.getContextUsage();
+		state.routedModel = getRoutedModel(ctx);
 	};
 	const hideTodoWidget = (ctx: ExtensionContext) => {
 		try { ctx.ui.setWidget(TODO_WIDGET_KEY, undefined); } catch { /* stale replacement context */ }
@@ -1185,8 +1237,15 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 	const refreshExternal = (ctx = state.ctx, rediscover = false): Promise<void> => {
 		if (!ctx) return Promise.resolve();
 		if (refreshPromise) return refreshPromise;
+		if (state.openRequests && !rediscover && Date.now() - requestCountsRefreshedAt < REQUEST_REFRESH_MS) return Promise.resolve();
 		const runGeneration = generation;
 		const promise = (async () => {
+			if (state.openRequests) {
+				requestCountsRefreshedAt = Date.now();
+				const repos = await fetchOpenRequestCounts(pi, state.openRequests.repos.map(({ repo }) => repo));
+				if (runGeneration === generation) state.openRequests.repos = repos;
+				return;
+			}
 			const rootResult = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd: ctx.cwd, timeout: 2_000 });
 			if (runGeneration !== generation) return;
 			if (rootResult.code !== 0) {
@@ -1296,6 +1355,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		generation++;
 		refreshPromise = undefined;
+		requestCountsRefreshedAt = 0;
 		quotaPromise = undefined;
 		subagentStatusPromise = undefined;
 		asyncMetricsPromise = undefined;
@@ -1383,6 +1443,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 	pi.on("model_select", async (_event, ctx) => {
 		state.ctx = ctx;
 		state.context = ctx.getContextUsage();
+		state.routedModel = getRoutedModel(ctx);
 		void refreshCodexQuota(ctx, true);
 		paint();
 	});
@@ -1393,6 +1454,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (_event, ctx) => {
 		state.ctx = ctx;
 		state.context = ctx.getContextUsage();
+		state.routedModel = getRoutedModel(ctx);
 		hideTodoWidget(ctx);
 		paint();
 	});
@@ -1401,6 +1463,8 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 		if (event.message.role === "assistant") {
 			state.stats = computeSessionStats(ctx.sessionManager.getEntries());
 			state.context = ctx.getContextUsage();
+			// message_end runs before Pi persists this response in the session context.
+			state.routedModel = getRoutedModel(ctx, [...ctx.sessionManager.buildSessionProjection().messages, event.message]);
 		} else if (event.message.role === "toolResult" && event.message.toolName === "todo") {
 			if (isTodoDetails(event.message.details)) state.todos = event.message.details.tasks.map((task) => ({ ...task }));
 			hideTodoWidget(ctx);
@@ -1456,6 +1520,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 		state.ctx = ctx;
 		state.stats = computeSessionStats(ctx.sessionManager.getEntries());
 		state.context = ctx.getContextUsage();
+		state.routedModel = getRoutedModel(ctx);
 		void refreshExternal(ctx);
 		void refreshCodexQuota(ctx, true);
 		paint();
@@ -1500,7 +1565,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 				ctx.ui.notify("Sidebar refreshed.", "info");
 				return;
 			} else if (action === "status") {
-				ctx.ui.notify(`Sidebar ${state.enabled ? "on" : "off"} • width ${state.width} • ${state.gitRepos.length} Git repo(s)`, "info");
+				ctx.ui.notify(`Sidebar ${state.enabled ? "on" : "off"} • width ${state.width} • ${state.openRequests?.repos.length ?? state.gitRepos.length} Git repo(s)`, "info");
 				return;
 			} else {
 				ctx.ui.notify("Usage: /sidebar [on|off|toggle|width N|refresh|status]", "warning");

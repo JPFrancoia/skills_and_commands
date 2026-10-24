@@ -228,7 +228,6 @@ assert.equal(requests.length, 0);
 assert.deepEqual(renderLatestWidget(), [
   "Now: Building a local summary extension",
   "Why: Make old conversations clear at a glance",
-  "Last: Selected milestone updates",
 ]);
 
 events.get("before_agent_start")?.(
@@ -246,7 +245,6 @@ assert.equal(requests[0].timeoutMs, 10_000);
 assert.deepEqual(renderLatestWidget(), [
   "Now: Show updates while you work",
   "Why: Make old conversations clear at a glance",
-  "Last: Selected milestone updates",
 ]);
 assert.match(requests[0].context.messages[0].content[0].text, /just received/);
 requests[0].resolve(
@@ -293,7 +291,6 @@ assert.equal(appended.length, 0);
 assert.deepEqual(renderLatestWidget(), [
   "Now: Live milestone summaries are ready",
   "Why: Let the user follow long agent work",
-  "Last: Implemented immediate and in-progress updates",
 ]);
 
 events.get("agent_settled")?.({}, ctx);

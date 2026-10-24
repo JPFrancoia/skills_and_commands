@@ -366,21 +366,29 @@ async function main(): Promise<void> {
 	}];
 	const render = (width = 48, height = 100, statuses = new Map<string, string>(), palette = theme) =>
 		__test__.renderSidebar(state as never, palette as never, statuses, width, height);
-	const plain = () => render().map((line) => line.trim()).join("\n");
+	const plainLines = (lines: string[]) => lines.map((line) => line.trim()).join("\n");
+	const plain = () => plainLines(render());
 	const lines = render(48, 24);
 	assert.ok(lines.length <= 24);
 	assert.ok(lines.every((line) => visibleWidth(line) <= 48 && !line.includes("\n")));
 	assert.ok(lines.every((line) => line.startsWith("  ")));
-	assert.match(plain(), /╭─ SESSION ─+╮/);
-	assert.match(plain(), /CONTEXT +83\.0%\n━{37}┄{7}\n83k \/ 100k tokens/);
-	assert.match(plain(), /0 +\$0\.000 +2\nTURNS +COST +COMPACTIONS/);
+	assert.match(plain(), /CONVERSATION/);
+	assert.doesNotMatch(plain(), /[╭╮╰╯│]|SESSION|TURNS|COMPACTIONS/);
+	assert.equal(render().filter((line) => /[█░]/.test(line)).length, 2);
+	assert.match(plain(), /quota +░{14} +—/);
+	assert.match(plain(), /ctx +█{11}▋░{2} +83\.0% • 83k \/ 100k/);
+	assert.match(plain(), /cwd[^\n]*\n🧹 compactions +2\n🔄 turns +0\n💰 cost +\$0\.000\n\nctx/);
+	assert.match(plain(), /ctx[^\n]*\n\nquota/);
+	state.context = { tokens: 18_000, contextWindow: 500_000, percent: 3.7 };
+	assert.match(plain(), /ctx +▌░{13} +3\.7% • 18k \/ 500k/);
+	state.context = { tokens: 83_000, contextWindow: 100_000, percent: 83 };
 	assert.match(plain(), /ACTIVITY/);
 	assert.match(plain(), /No tasks or agents yet/);
 	assert.doesNotMatch(plain(), /SUBAGENTS|TASKS 0\/0|none used|no todos/);
 	assert.doesNotMatch(plain(), /\x1b\[2J|clean-sibling/);
 	assert.match(plain(), /• main spoofed +1 changed/);
 	state.context = { tokens: 110_000, contextWindow: 100_000, percent: 110 };
-	assert.match(plain(), /CONTEXT +110\.0%\n━{44}/);
+	assert.match(plain(), /ctx +█{14} +110\.0%/);
 	state.context = { tokens: 83_000, contextWindow: 100_000, percent: 83 };
 	assert.doesNotMatch(render(48, 100, new Map([["mcp", "MCP connected"], ["mcp-auth", "MCP auth"]])).join("\n"), /MCP/);
 	const statuses = new Map([["ponytail", "⚡ FULL"], ["quota", "7d:2% left (in 5d 23h 41m) cap:OK"], ["unsafe\x1b[2J", "\x1b[32mready\x1b[0m\x1b[2J\nnext"]]);
@@ -389,6 +397,41 @@ async function main(): Promise<void> {
 	assert.match(statusLines.join("\n"), /quota\n +7d:2% left/);
 	assert.doesNotMatch(statusLines.join("\n"), /\x1b\[2J/);
 
+	const quotaStatuses = new Map([
+		["pi-quotas-usage", "\x1b[32m7d:2% left\x1b[0m (in 5d 23h 41m) \x1b[2mcap:\x1b[0m\x1b[32mOK\x1b[0m\x1b[2J"],
+		["pi-quotas-token-status", "5h:$1.00 · wk:$2.00 · mo:$3.00"],
+		["ponytail", "⚡ FULL"],
+	]);
+	const quotaOutput = render(53, 100, quotaStatuses).join("\n");
+	const extensionsStart = quotaOutput.indexOf("EXTENSIONS");
+	assert.ok(quotaOutput.indexOf("quota") < extensionsStart);
+	assert.ok(quotaOutput.indexOf("7d:2% left") < extensionsStart);
+	assert.ok(quotaOutput.indexOf("5h:$1.00") < extensionsStart);
+	assert.equal(quotaOutput.split("7d:2% left").length, 2);
+	assert.doesNotMatch(quotaOutput, /pi-quotas-usage|pi-quotas-token-status|\x1b\[2J|[╭╮╰╯│]/);
+	assert.match(quotaOutput.slice(extensionsStart), /ponytail/);
+	assert.match(quotaOutput, /quota +▎░{13} +\x1b\[32m7d:2% left/);
+	assert.doesNotMatch(quotaOutput, /cap:/);
+	for (const cap of ["cap:OK", "cap:\x1b[32mOK\x1b[0m", "\x1b[2mcap:\x1b[0m\x1b[32mOK\x1b[0m"]) {
+		assert.doesNotMatch(render(53, 100, new Map([["pi-quotas-usage", `7d:96% left ${cap}`]])).join("\n"), /cap:|OK/);
+	}
+	assert.match(render(53, 100, new Map([["pi-quotas-usage", "7d:96% left cap:REACHED !"]])).join("\n"), /cap:REACHED !/);
+	const metricLines = render().filter((line) => /🧹|🔄|💰/.test(line));
+	assert.equal(metricLines.length, 3);
+	assert.deepEqual(metricLines.map((line) => visibleWidth(line.slice(0, line.search(/[02$]/)))), [17, 17, 17]);
+	assert.equal(quotaOutput.split("\n").filter((line) => /[█░]/.test(line)).length, 2);
+	assert.equal(__test__.quotaRemaining("\x1b[32m7d:2% left\x1b[0m (↺in 5d 23h 41m) cap:OK"), 2);
+	assert.equal(__test__.quotaRemaining("5h:80% left 7d:20% left"), 20);
+	assert.equal(__test__.quotaRemaining("week:99.5% search:0%"), 0);
+	assert.equal(__test__.quotaRemaining("week:100%"), 100);
+	assert.match(render(80, 100, new Map([["pi-quotas-usage", "5h:80% left 7d:20% left"]])).join("\n"), /quota +█{2}▊░{11}/);
+	assert.match(render(80, 100, new Map([["pi-quotas-usage", "week:100%"]])).join("\n"), /quota +█{14}/);
+	assert.match(render(80, 100, new Map([["pi-quotas-usage", "week:0%"]])).join("\n"), /quota +░{14} +week:0%/);
+	assert.match(render(80, 100, new Map([["pi-quotas-usage", "usage unavailable"]])).join("\n"), /quota +░{14} +usage unavailable/);
+	for (const text of ["", "usage unavailable", "5h:$2.00/$10.00", "premium:7/300", "7d:120% left", "7d:-2% left", "7d:NaN% left"]) {
+		assert.equal(__test__.quotaRemaining(text), undefined, text);
+	}
+
 	state.subagentRuns.set("async:run:0", { key: "async:run:0", agent: "scout\x1b[2J\nspoofed", running: false, durationMs: 60_000, cost: 0.2337 });
 	state.rpcSubagentRuns.set("rpc:fleet-1", { key: "rpc:fleet-1", agent: "scout spoofed", running: true, durationMs: 0, cost: 0 });
 	const colorTheme = {
@@ -396,7 +439,7 @@ async function main(): Promise<void> {
 		fg: (color: string, text: string) => `\x1b[${color === "success" ? 32 : color === "error" ? 31 : 37}m${text}\x1b[0m`,
 	};
 	const subagentLines = render(48, 40, new Map(), colorTheme).join("\n");
-	assert.match(subagentLines, /\x1b\[31m━/);
+	assert.match(subagentLines, /\x1b\[31m█/);
 	assert.match(subagentLines, /\x1b\[32m●/);
 	assert.match(subagentLines, /scout spoofed/);
 	assert.match(subagentLines, /Stopped · 1m · \$0\.2337/);
@@ -408,13 +451,52 @@ async function main(): Promise<void> {
 	state.subagentRuns.clear();
 	state.ctx = { cwd: "/repo", model: { id: "gpt-5.6", provider: "openai-codex" } };
 	state.codexWeeklyQuota = { remaining: 83, resetAt: Date.now() + 6.5 * 86_400_000 };
-	assert.match(plain(), /WEEKLY CODEX +83% left\n━{37}┄{7}\nResets in 6d/);
+	assert.match(plain(), /quota +█{11}▋░{2} +83% left • Codex 7d\nResets in 6d/);
+	const codexWithStatus = render(80, 100, quotaStatuses).join("\n");
+	assert.equal(codexWithStatus.split("\n").filter((line) => /[█░]/.test(line)).length, 2);
+	assert.match(codexWithStatus, /quota +█{11}▋░{2} +83% left/);
+	assert.equal(codexWithStatus.split("7d:2% left").length, 2);
+	assert.doesNotMatch(codexWithStatus, /cap:/);
 	state.codexWeeklyQuota = undefined;
 	assert.match(plain(), /Loading account quota…/);
 	state.codexWeeklyQuota = null;
 	assert.match(plain(), /Account quota unavailable/);
 	state.ctx.model.provider = "anthropic";
-	assert.doesNotMatch(plain(), /WEEKLY CODEX/);
+	assert.doesNotMatch(plain(), /Codex 7d/);
+	state.ctx.model = { id: "auto", provider: "jev", api: "pi-virtual", reasoning: true };
+	const responses: any[] = [
+		{ role: "assistant", provider: "openai-codex", model: "gpt-6-astra", thinkingLevel: "high", stopReason: "stop" },
+		{ role: "assistant", provider: "openai-codex", model: "failed-model", thinkingLevel: "low", stopReason: "error" },
+		{ role: "assistant", provider: "openai-codex", model: "aborted-model", stopReason: "aborted" },
+		{ role: "toolResult" },
+	];
+	state.ctx.sessionManager = { buildSessionProjection: () => ({ messages: responses }) };
+	state.ctx.modelRegistry = { find: (provider: string, id: string) => ({ id, provider, api: "responses" }) };
+	state.routedModel = __test__.getRoutedModel(state.ctx);
+	assert.deepEqual(state.routedModel, { id: "gpt-6-astra", thinkingLevel: "high" });
+	assert.match(plainLines(render(80)), /\(jev\) auto • high → gpt-6-astra • high/);
+	assert.match(plain().replace(/\n/g, " "), /\(jev\) auto • high → gpt-6-astra • high/);
+	const next = { ...responses[0], model: "gpt-6-luna", thinkingLevel: "low" };
+	assert.deepEqual(__test__.getRoutedModel(state.ctx, [...responses, next]), { id: "gpt-6-luna", thinkingLevel: "low" });
+	assert.equal(__test__.getRoutedModel(state.ctx, []), undefined);
+	assert.equal(__test__.getRoutedModel(state.ctx, responses.slice(1)), undefined);
+	state.routedModel = undefined;
+	assert.match(plain(), /\(jev\) auto • high/);
+	assert.doesNotMatch(plain(), /→/);
+	state.ctx.modelRegistry.find = () => undefined;
+	assert.equal(__test__.getRoutedModel(state.ctx), undefined);
+	state.ctx.model = { id: "direct-model", provider: "anthropic", api: "messages", reasoning: true };
+	state.routedModel = { id: "stale-route", thinkingLevel: "high" };
+	assert.equal(__test__.getRoutedModel(state.ctx), undefined);
+	assert.match(plain(), /\(anthropic\) direct-model • high/);
+	assert.doesNotMatch(plain(), /→|stale-route/);
+	state.thinkingLevel = "off";
+	assert.match(plain(), /direct-model • thinking\s+off/);
+	state.ctx.model.reasoning = false;
+	assert.doesNotMatch(plain(), /thinking\s+off/);
+	state.thinkingLevel = "high";
+	state.ctx.model = { id: "auto", provider: "jev", api: "pi-virtual", reasoning: true };
+	state.routedModel = { id: "gpt-6-astra", thinkingLevel: "high" };
 	state.gitRepos = [{ path: "/repo", label: "repo", branch: "main", files: [] }, {
 		path: "/outside/repo",
 		label: "outside/repo",
@@ -447,19 +529,177 @@ async function main(): Promise<void> {
 	for (const width of [20, 40, 53, 80]) {
 		for (const height of [1, 12, 24, 45, 100]) {
 			for (const palette of [theme, colorTheme]) {
-				const output = render(width, height, statuses, palette);
+				const output = render(width, height, new Map([...statuses, ...quotaStatuses]), palette);
 				assert.ok(output.length <= height, `height ${width}×${height}`);
 				assert.ok(output.every((line) => visibleWidth(line) <= width && !line.includes("\n")), `width ${width}×${height}`);
 				assert.doesNotMatch(output.join("\n"), /\x1b\[2J/);
 			}
 		}
 	}
-	assert.match(render(20).join("\n"), /TURNS +0\n +COST +\$0\.000\n +COMPACTIONS +2/);
-	assert.match(render(40, 34, statuses).join("\n"), /… \d+ more/);
+	assert.match(plainLines(render(20)), /🧹 compactions +2\n🔄 turns +0\n💰 cost +\$\n0\n\.\n0\n0\n0/);
+	assert.match(render(40, 32, statuses).join("\n"), /… \d+ more/);
 	state.context = { tokens: null, contextWindow: 100_000, percent: null };
-	assert.match(plain(), /CONTEXT +—\n┄{44}\n\? \/ 100k tokens/);
+	assert.match(plain(), /ctx +░{14} +— • \? \/ 100k/);
 	state.context = undefined;
 	assert.match(plain(), /Waiting for context usage/);
+
+	state.openRequests = { repos: [
+		{ repo: { host: "github.com", path: "acme/widgets", forge: "github" }, count: 213, breakdown: { drafts: 3, passing: 200, notPassing: 10 } },
+		{ repo: { host: "gitlab.example.com", path: "acme/group/gadgets", forge: "gitlab" }, count: 12, breakdown: { drafts: 2, passing: 5, notPassing: 5 } },
+		{ repo: { host: "github.com", path: "acme/no-prs", forge: "github" }, count: 0 },
+		{ repo: { host: "gitlab.example.com", path: "acme/group/no-mrs", forge: "gitlab" }, count: 0 },
+		{ repo: { host: "github.com", path: "acme/loading", forge: "github" } },
+		{ repo: { host: "gitlab.com", path: "acme/private", forge: "gitlab" }, error: "Access denied\x1b[2J\nretry later" },
+	], errors: ["Unsupported host: example.com"] };
+	assert.match(plain(), /acme\/widgets \(213\)\n3 draft · 200 CI ✓ · 10 CI !/);
+	assert.match(plain(), /acme\/group\/gadgets \(12\)\n2 draft · 5 CI ✓ · 5 CI !/);
+	assert.doesNotMatch(plain(), /github\.com|gitlab\.example\.com/);
+	const request = state.openRequests.repos[0];
+	for (const [drafts, passing, notPassing, summary] of [
+		[3, 0, 0, "3 draft"],
+		[0, 2, 0, "2 CI ✓"],
+		[0, 0, 4, "4 CI !"],
+		[3, 2, 0, "3 draft · 2 CI ✓"],
+		[0, 2, 4, "2 CI ✓ · 4 CI !"],
+		[3, 0, 4, "3 draft · 4 CI !"],
+	] as const) {
+		state.openRequests.repos[0] = { ...request, count: drafts + passing + notPassing, breakdown: { drafts, passing, notPassing } };
+		const output = plain().split("\n");
+		const index = output.findIndex((line) => line.startsWith("acme/widgets"));
+		assert.equal(output[index], `acme/widgets (${drafts + passing + notPassing})`);
+		assert.equal(output[index + 1], summary);
+		assert.doesNotMatch(plain(), /\b0 draft|\b0 CI [✓!]/);
+	}
+	state.openRequests.repos[0] = request;
+	assert.match(plainLines(render(20)), /widgets \(213\)/);
+	assert.match(plainLines(render(20)), /gadgets \(12\)/);
+	assert.doesNotMatch(plain(), /no-prs|no-mrs|0 open PRs|0 open MRs/);
+	assert.match(plain(), /loading…/);
+	assert.match(plain(), /acme\/private +unavailable\nAccess denied retry later/);
+	assert.match(plain(), /Unsupported host/);
+	assert.doesNotMatch(plain(), /git status failed|\x1b\[2J/);
+	for (const width of [20, 40, 53, 80]) {
+		for (const height of [12, 24, 45, 100]) {
+			const output = render(width, height, new Map(), colorTheme);
+			assert.ok(output.length <= height);
+			assert.ok(output.every((line) => visibleWidth(line) <= width));
+		}
+	}
+	state.openRequests = { repos: state.openRequests.repos.filter(({ count }: { count?: number }) => count === 0), errors: [] };
+	assert.match(plain(), /No open PRs or MRs/);
+	assert.doesNotMatch(plain(), /no-prs|no-mrs|No repositories in REPOS/);
+	assert.equal(state.openRequests.repos.length, 2, "hidden repositories remain available for refresh");
+	state.openRequests = { repos: [], errors: [] };
+	assert.match(plain(), /No repositories in REPOS/);
+	state.openRequests = { repos: [], errors: ["Not a repository path: gitlab.com/group"] };
+	assert.match(plain(), /Not a repository path/);
+	delete state.openRequests;
+	assert.match(plain(), /git status failed/);
+
+
+	const savedRepos = process.env.REPOS;
+	try {
+		for (const config of [undefined, "https://github.com/acme/widgets,https://gitlab.com/acme/group/gadgets", "", "https://example.com/acme/repo"]) {
+			if (config === undefined) delete process.env.REPOS;
+			else process.env.REPOS = config;
+			const handlers = new Map<string, Function>();
+			const commands = new Map<string, any>();
+			const calls: string[] = [];
+			const listeners = new Map<string, Function>();
+			let fail = false;
+			let mergeRequests = 0;
+			const screen = new Terminal();
+			screen.width = 180;
+			screen.rows = 70;
+			const hostTui = { terminal: screen, doRender() {}, requestRender() {}, stopped: false };
+			let footer: any;
+			const ctx: any = {
+				mode: "tui", cwd: tmpdir(),
+				sessionManager: { getSessionFile: () => undefined, getSessionId: () => undefined, getEntries: () => [], getBranch: () => [], buildSessionProjection: () => ({ messages: [] }) },
+				getContextUsage: () => undefined,
+				ui: {
+					theme, setWidget() {}, notify() {},
+					setFooter(factory: any) { footer?.dispose(); footer = factory?.(hostTui, theme, { getExtensionStatuses: () => new Map() }); },
+				},
+			};
+			sidebarExtension({
+				on: (name: string, handler: Function) => handlers.set(name, handler),
+				registerCommand: (name: string, command: any) => commands.set(name, command),
+				getSessionName: () => undefined, getThinkingLevel: () => "off", appendEntry() {},
+				events: {
+					on: (name: string, listener: Function) => { listeners.set(name, listener); return () => listeners.delete(name); },
+					emit: (_name: string, request: any) => listeners.get(`subagents:rpc:v1:reply:${request.requestId}`)?.({ success: true, data: { fleet: { version: 1, entries: [] } } }),
+				},
+				exec: async (bin: string) => {
+					calls.push(bin);
+					return bin === "git" || fail ? { code: 1, stdout: "", stderr: "Access denied" } : {
+						code: 0, stderr: "", stdout: JSON.stringify({ data: bin === "gh"
+							? { repository: { pullRequests: { nodes: [
+								{ isDraft: true, commits: { nodes: [] } },
+								{ isDraft: false, commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }] } },
+								{ isDraft: false, commits: { nodes: [] } },
+							], pageInfo: { hasNextPage: false, endCursor: null } } } }
+							: { project: { mergeRequests: { nodes: Array.from({ length: mergeRequests }, () => ({ draft: false, headPipeline: { status: "SUCCESS" } })), pageInfo: { hasNextPage: false, endCursor: null } } } } }),
+					};
+				},
+			} as never);
+			try {
+				await handlers.get("session_start")!({}, ctx);
+				await commands.get("sidebar").handler("refresh", ctx);
+				const lastFrame = () => screen.writes.at(-1) ?? "";
+				if (config === undefined) {
+					assert.ok(calls.includes("git"));
+					assert.ok(calls.every((bin) => bin === "git"));
+					assert.match(lastFrame(), /not a git repository/);
+				} else {
+					assert.ok(!calls.includes("git"));
+					if (config.includes("github.com")) {
+						assert.match(lastFrame(), /acme\/widgets \(3\)/);
+						assert.match(lastFrame(), /1 draft · 1 CI ✓ · 1 CI !/);
+						assert.doesNotMatch(lastFrame(), /github\.com/);
+						assert.doesNotMatch(lastFrame(), /acme\/group\/gadgets|0 open MRs/);
+						const realNow = Date.now;
+						let clock = realNow();
+						try {
+							Date.now = () => clock;
+							await commands.get("sidebar").handler("refresh", ctx);
+							const before = calls.length;
+							clock += 299_999;
+							await handlers.get("agent_end")!({}, ctx);
+							assert.equal(calls.length, before, "no automatic refresh before five minutes");
+							clock += 1;
+							await handlers.get("agent_end")!({}, ctx);
+							await commands.get("sidebar").handler("refresh", ctx);
+							assert.equal(calls.length, before + 2, "automatic refresh at five minutes");
+							await commands.get("sidebar").handler("refresh", ctx);
+							assert.equal(calls.length, before + 4, "manual refresh bypasses throttling");
+						} finally {
+							Date.now = realNow;
+						}
+						mergeRequests = 7;
+						await commands.get("sidebar").handler("refresh", ctx);
+						assert.match(lastFrame(), /acme\/group\/gadgets/);
+						assert.match(lastFrame(), /\(7\)/);
+						mergeRequests = 0;
+						await commands.get("sidebar").handler("refresh", ctx);
+						assert.doesNotMatch(lastFrame(), /acme\/group\/gadgets|0 open MRs/);
+						fail = true;
+						await commands.get("sidebar").handler("refresh", ctx);
+						assert.match(lastFrame(), /unavailable/);
+						assert.doesNotMatch(lastFrame(), /\(3\)|\(7\)|draft ·/);
+					} else {
+						assert.equal(calls.length, 0);
+						assert.match(lastFrame(), config ? /Unsupported host/ : /No repositories in REPOS/);
+					}
+				}
+			} finally {
+				await handlers.get("session_shutdown")!({}, ctx);
+			}
+		}
+	} finally {
+		if (savedRepos === undefined) delete process.env.REPOS;
+		else process.env.REPOS = savedRepos;
+	}
 }
 
 await main();

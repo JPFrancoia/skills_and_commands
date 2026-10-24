@@ -199,11 +199,7 @@ function renderSummary(
     const line = (label: string, value: string) =>
       `${theme.fg("accent", theme.bold(`${label}:`))} ${value}`;
     return new Text(
-      [
-        line("Now", summary.now),
-        line("Why", summary.why),
-        line("Last", summary.last),
-      ].join("\n"),
+      [line("Now", summary.now), line("Why", summary.why)].join("\n"),
       0,
       0,
     );

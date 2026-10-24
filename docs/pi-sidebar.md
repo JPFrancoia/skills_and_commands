@@ -1,26 +1,38 @@
 # Custom Pi sidebar
 
-`extensions/pi-sidebar/` is an opt-in trial of a fixed right sidebar that replaces Pi's footer. Pi's transcript and editor reflow into the remaining width, so sidebar content does not cover them. Fullscreen rendering is experimental. The extension wraps private TUI rendering and terminal-width fields, so it may break mouse selection, overlays, or future Pi upgrades. There is no proof that it fixes earlier display problems.
+`extensions/pi-sidebar/` provides a fixed right sidebar that replaces Pi's footer. Pi's transcript and editor reflow into the remaining width, so sidebar content does not cover them. Fullscreen rendering is experimental. The extension wraps private TUI rendering and terminal-width fields, so it may break mouse selection, overlays, or future Pi upgrades. There is no proof that it fixes earlier display problems.
 
-## Try it
+## Enable for all sessions
 
-Start a new Pi session in fullscreen mode and load the package from source:
+From this repository's root, install the sidebar and remove the separate compaction-count package:
 
 ```bash
-pi --tui-mode fullscreen -e /home/djipey/informatique/ai/skills_and_commands/extensions/pi-sidebar
+pi install "$PWD/extensions/pi-sidebar"
+pi remove "$PWD/extensions/pi-compaction-count"
 ```
 
-This is an opt-in trial; it does not install the package globally or change settings. Relaunch Pi without `-e` to remove the trial completely. `/sidebar off` hides the sidebar, but the extension still owns the footer and suppresses the `rpiv-todo` widget. Do not load it together with `pi-sidebar-tui`, `@esso0428/pi-sidebar`, another custom footer, or another extension that reserves terminal columns.
+These commands update the global package list in `~/.pi/agent/settings.json`. New Pi sessions load the sidebar without `-e`. Run `/reload` in each existing session.
+
+The sidebar keeps its own 🧹 compactions row. Removing `pi-compaction-count` prevents the duplicate indicator in Extensions. It does not disable automatic compaction.
+
+To disable the sidebar globally, run this command from the repository root, then reload existing sessions:
+
+```bash
+pi remove "$PWD/extensions/pi-sidebar"
+```
+
+`/sidebar off` only hides the sidebar for the current process. The extension still owns the footer and suppresses the `rpiv-todo` widget. Do not load it together with `pi-sidebar-tui`, `@esso0428/pi-sidebar`, another custom footer, or another extension that reserves terminal columns.
 
 ## Displayed data
 
 - conversation name, with the first user message as fallback;
 - model, thinking level, cwd, context use, conversation compaction count, turns, and cost;
-- a weekly Codex headroom bar and reset countdown when Codex is active and account usage is available;
+- one quota bar, with weekly Codex headroom or the tightest remaining percentage from quota statuses;
 - running foreground `subagent` tool children and detached async children from the active session;
 - `rpiv-todo` tasks from the active session branch;
 - footer indicators from other extensions, including Ponytail;
-- Git changes in the current checkout, dirty worktrees from that repository and discovered independent nested repositories, and dirty independent repositories below it.
+- open PR/MR counts for configured repositories when `REPOS` is set;
+- otherwise, Git changes in the current checkout, dirty worktrees, and discovered independent repositories.
 
 The native footer and `rpiv-todo`'s above-editor widget are hidden because their data is shown in the sidebar.
 
@@ -28,13 +40,23 @@ The native footer and `rpiv-todo`'s above-editor widget are hidden because their
 
 The sidebar uses Pi's active theme, with side padding and compact section dividers.
 
-- A framed session card shows the title and working directory. Long titles wrap onto two lines before truncation.
-- Model, provider, and thinking level appear above a full-width context meter. Token counts sit below the meter.
-- Turns, cost, and compactions share a metric row. Narrow sidebars stack these values.
-- Subagents and tasks appear when present. When both are empty, one Activity row says `No tasks or agents yet`.
-- Extension statuses show their existing keys as labels. Long status text wraps beneath each label.
+- The Conversation section uses compact rows without a surrounding frame.
+- Long titles wrap onto two lines before truncation. Long model and quota lines wrap within the available width.
+- The model row uses the footer format: `(jev) auto • high → gpt-6-astra • high`.
+- 🧹 compactions, 🔄 turns, and 💰 cost appear directly below the working directory with aligned values.
+- The `ctx` and `quota` bars end the Conversation section. Each bar has a blank line above it.
 
-The Git section shows repository names, branches, changed-file counts, and file details. Short terminals limit section content and can omit sections entirely.
+The bars use 14 cells when space permits. Partial blocks show small percentages instead of rounding them to an empty bar. Context shows the percentage used and token counts. Quota shows the percentage remaining.
+
+For virtual models, the arrow shows the physical model and thinking level of the latest successful response. Failed and aborted responses do not replace that route. Without a successful response, the model line shows only the selection. Physical model selections do not show an arrow.
+
+Existing `pi-quotas-usage` text appears beside the quota bar. Token-status text appears beneath it. These indicators retain their colors and refresh behavior. The quota line omits the healthy `cap:OK` marker, including colored versions. It retains `cap:REACHED` warnings. They do not repeat in Extensions.
+
+For direct Codex selections, an available weekly account value controls the quota bar. Otherwise, the bar uses the lowest remaining percentage in `pi-quotas-usage`. Multiple windows still share one bar. Status formats without percentages keep their text but show an unknown bar value. An em dash indicates missing data, not zero remaining quota.
+
+Subagents and tasks appear when present. When both are empty, one Activity row says `No tasks or agents yet`. Other extension statuses show their existing keys as labels. Long status text wraps beneath each label.
+
+With `REPOS` set, the Git section shows repository names, count badges, and draft/CI breakdowns. Otherwise, it shows repository names, branches, changed-file counts, and file details. Short terminals limit section content and can omit sections entirely.
 
 ## Subagents
 
@@ -48,7 +70,7 @@ Async metrics use pi-subagents' validated run status. The sidebar accepts lifecy
 
 ## Weekly Codex quota
 
-The weekly Codex meter shows the overall account percentage remaining, not usage attributed to the current conversation. Its percentage appears above the meter. A separate line shows `Resets in Xd`, or `Resets in Xh` below one day. Session metrics follow beneath it.
+For direct Codex selections, the quota bar shows the weekly account percentage remaining, not usage attributed to the current conversation. Its percentage appears beside the bar. A separate line shows `Resets in Xd`, or `Resets in Xh` for less than one day. Session metrics appear before both bars.
 
 The extension resolves the current Codex OAuth token through Pi and queries OpenAI's account-usage endpoint. It refreshes at session start, after completed agent runs, on Codex model selection, and on `/sidebar refresh`. Tokens and responses remain in memory and are never logged or persisted. Pending requests show `Loading account quota…`. Authentication, request, or response failures show `Account quota unavailable`.
 
@@ -59,13 +81,47 @@ The extension resolves the current Codex OAuth token through Pi and queries Open
 /sidebar on              Show it
 /sidebar off             Hide it
 /sidebar width 50        Set width for this process (20–80)
-/sidebar refresh         Refresh Codex quota, Git data, and repository discovery
+/sidebar refresh         Refresh quotas and the active Git mode
 /sidebar status          Show current state, width, and repository count
 ```
 
 The default width is 53 columns. With the 70-column minimum for Pi and a one-column separator, the terminal needs at least 124 columns to show the default-width sidebar. It automatically hides when showing it would leave fewer than 70 columns for Pi.
 
+## Open PR/MR counts
+
+When the `REPOS` environment variable exists, the Git section replaces local changes with open request counts. Use the same comma-separated repository URLs as `pi-open`:
+
+```bash
+REPOS=https://github.com/acme/widgets,https://gitlab.example.com/acme/group/gadgets \
+  pi --tui-mode fullscreen -e /path/to/extensions/pi-sidebar
+```
+
+Each repository shows its total in parentheses directly after its name, like `Essorix/green_slope_core (1)`. The count uses a bold, muted badge without right alignment. The next row splits that total into drafts and two CI groups. Hostnames do not appear.
+
+```text
+acme/widgets (4)
+1 draft · 2 CI ✓ · 1 CI !
+```
+
+- `draft` counts all draft requests, regardless of CI.
+- `CI ✓` counts non-draft requests with a successful combined CI status.
+- `CI !` counts other non-draft requests, including failed, pending, running, canceled, skipped, or missing CI.
+
+Groups with zero requests stay hidden. Separators appear only between visible groups. The visible counts add up to the repository total. GitHub uses the latest commit's status rollup. GitLab uses the head pipeline status. These groups describe CI, not review approval or mergeability.
+
+Repositories with zero requests stay hidden but remain in the refresh list. If every repository has zero requests, the section shows `No open PRs or MRs`. Loading rows and errors stay visible.
+
+Each refresh reads pages of up to 100 requests. It does not stop at `/open`'s 100-request listing limit. If any page fails, the repository shows `unavailable` instead of partial counts.
+
+GitHub hosts use authenticated `gh`. GitLab hosts use authenticated `glab`. Host detection follows `pi-open`: names must start with `github` or `gitlab`. The sidebar imports its shared repository helper from `extensions/pi-open/repos.ts`. Keep that directory beside `pi-sidebar` when copying these source packages. Loading the `pi-open` extension itself is not required.
+
+Counts refresh at startup and about every five minutes. `/sidebar refresh` bypasses that interval. Each repository refresh has a 15-second budget across all read-only queries. Loading and failed requests never appear as zero. Failed requests show `unavailable` with an error instead of retaining an outdated count.
+
+An empty `REPOS` value shows `No repositories in REPOS`. Invalid entries show configuration errors. Neither case falls back to local Git changes. Relaunch Pi with `REPOS` unset to restore local Git mode. Changes to the environment inside Pi take effect after `/reload`.
+
 ## Git discovery
+
+This mode applies only when `REPOS` is unset. No forge API requests run in this mode.
 
 Git's native worktree list is refreshed for the checkout containing Pi's cwd and for every discovered independent repository below it. This includes sibling and nested-repository worktrees outside the current directory tree. Dirty worktrees are always shown. The checkout containing Pi's cwd remains visible when clean; other clean worktrees are hidden unless their Git status changed while the current Pi conversation was open, after which they remain visible as clean for that conversation. This memory is stored in the Pi session, survives `/reload`, and follows the active `/tree` branch. A clean worktree that was merely present at startup or opened by another process remains hidden.
 
@@ -83,7 +139,11 @@ One scrolling capture showed a briefly blank sidebar before repainting. Fullscre
 
 The dashboard redesign also passed layout checks at widths 20, 40, 53, and 80, including Unicode text and unknown context usage. Real Pi checks covered reload, width changes, narrow-window hiding, and restoration. Populated and empty fixtures were inspected in xterm with dark and light themes.
 
-Original trial captures are under `/tmp/pi-sidebar-proof/`. Dashboard captures and screenshots are under `/tmp/pi-sidebar-dashboard-proof/`. These files are temporary. The redesign changes presentation only and retains the same fullscreen risks.
+Session-card checks covered virtual-model replay, the selected and routed thinking levels, quota placement, reload, and narrow-window hiding. They used synthetic responses and quota statuses without model requests. Dark and light screenshots are under `/tmp/pi-sidebar-session-card-proof/`.
+
+The compact two-bar layout passed adjacent tests and real Pi reload, width, hiding, and restoration checks. Dark and light screenshots were inspected. Synthetic fixtures and terminal captures are under `/tmp/pi-sidebar-simple-bars-proof/`. No live model request was needed.
+
+Original trial captures are under `/tmp/pi-sidebar-proof/`. Dashboard captures and screenshots are under `/tmp/pi-sidebar-dashboard-proof/`. These files are temporary. The compact layout retains the same fullscreen risks.
 
 ## Compatibility and troubleshooting
 

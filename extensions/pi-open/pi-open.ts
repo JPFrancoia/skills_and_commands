@@ -11,35 +11,12 @@
 
 import { getMarkdownTheme, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Markdown } from "@earendil-works/pi-tui";
+import { parseRepos, type Repo } from "./repos.ts";
 
 const ENTRY = "open-requests";
 const TIMEOUT_MS = 60_000;
 
 type Request = { title: string; url: string; createdAt: string; author: string; approved: boolean };
-
-type Repo = { host: string; path: string; forge: "gitlab" | "github" };
-
-function parseRepos(value: string | undefined): { repos: Repo[]; errors: string[] } {
-	const repos: Repo[] = [];
-	const errors: string[] = [];
-	for (const raw of (value ?? "").split(",")) {
-		const entry = raw.trim().replace(/\/+$/, "");
-		if (!entry) continue;
-		let url: URL;
-		try {
-			url = new URL(entry.includes("://") ? entry : `https://${entry}`);
-		} catch {
-			errors.push(`Not a URL: ${entry}`);
-			continue;
-		}
-		const path = url.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
-		const forge = url.hostname.startsWith("gitlab") ? "gitlab" : url.hostname.startsWith("github") ? "github" : undefined;
-		if (!forge) errors.push(`Unsupported host (expected gitlab* or github*): ${entry}`);
-		else if (!path.includes("/")) errors.push(`Not a repository path: ${entry}`);
-		else repos.push({ host: url.hostname, path, forge });
-	}
-	return { repos, errors };
-}
 
 function command(repo: Repo): { command: string; args: string[] } {
 	if (repo.forge === "gitlab") {
