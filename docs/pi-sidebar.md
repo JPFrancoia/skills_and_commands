@@ -13,7 +13,7 @@ pi remove "$PWD/extensions/pi-compaction-count"
 
 These commands update the global package list in `~/.pi/agent/settings.json`. New Pi sessions load the sidebar without `-e`. Run `/reload` in each existing session.
 
-The sidebar keeps its own 🧹 compactions row. Removing `pi-compaction-count` prevents the duplicate indicator in Extensions. It does not disable automatic compaction.
+The sidebar keeps its own 🧹 compactions row. Removing `pi-compaction-count` prevents a duplicate extension indicator in Conversation. It does not disable automatic compaction.
 
 To disable the sidebar globally, run this command from the repository root, then reload existing sessions:
 
@@ -28,9 +28,9 @@ pi remove "$PWD/extensions/pi-sidebar"
 - conversation name, with the first user message as fallback;
 - model, thinking level, cwd, context use, conversation compaction count, turns, and cost;
 - one quota bar, with weekly Codex headroom or the tightest remaining percentage from quota statuses;
-- running foreground `subagent` tool children and detached async children from the active session;
+- main-agent runtime and cost, plus foreground children and detached async children from the active session;
 - `rpiv-todo` tasks from the active session branch;
-- footer indicators from other extensions, including Ponytail;
+- plain-text status values from other extensions, including Ponytail; these appear below the quota row in Conversation;
 - open PR/MR counts for configured repositories when `REPOS` is set;
 - otherwise, Git changes in the current checkout, dirty worktrees, and discovered independent repositories.
 
@@ -44,29 +44,43 @@ The sidebar uses Pi's active theme, with side padding and compact section divide
 - Long titles wrap onto two lines before truncation. Long model and quota lines wrap within the available width.
 - The model row uses the footer format: `(jev) auto • high → gpt-6-astra • high`.
 - 🧹 compactions, 🔄 turns, and 💰 cost appear directly below the working directory with aligned values.
-- The `ctx` and `quota` bars end the Conversation section. Each bar has a blank line above it.
+- The `ctx` and `quota` bars each have a blank line above them. Extension status values follow the quota details.
 
 The bars use 14 cells when space permits. Partial blocks show small percentages instead of rounding them to an empty bar. Context shows the percentage used and token counts. Quota shows the percentage remaining.
 
 For virtual models, the arrow shows the physical model and thinking level of the latest successful response. Failed and aborted responses do not replace that route. Without a successful response, the model line shows only the selection. Physical model selections do not show an arrow.
 
-Existing `pi-quotas-usage` text appears beside the quota bar. Token-status text appears beneath it. These indicators retain their colors and refresh behavior. The quota line omits the healthy `cap:OK` marker, including colored versions. It retains `cap:REACHED` warnings. They do not repeat in Extensions.
+Existing `pi-quotas-usage` text appears beside the quota bar. Token-status text appears beneath it. These indicators retain their colors and refresh behavior. The quota line omits the healthy `cap:OK` marker, including colored versions. It retains `cap:REACHED` warnings.
 
 For direct Codex selections, an available weekly account value controls the quota bar. Otherwise, the bar uses the lowest remaining percentage in `pi-quotas-usage`. Multiple windows still share one bar. Status formats without percentages keep their text but show an unknown bar value. An em dash indicates missing data, not zero remaining quota.
 
-Subagents and tasks appear when present. When both are empty, one Activity row says `No tasks or agents yet`. Other extension statuses show their existing keys as labels. Long status text wraps beneath each label.
+Extension status values appear in the dim theme color below the quota details. They share a row with ` · ` separators and wrap within the sidebar width. The sidebar sorts values by key but does not show internal-key labels. It removes embedded styles before applying the dim color. Short MCP and Ponytail statuses share one row. Native `mcp` and `mcp-auth` statuses remain excluded, and quota statuses keep their existing presentation.
+
+Agents and tasks appear below Conversation. Main agent always appears first in Agents, including before any child agent runs.
 
 With `REPOS` set, the Git section shows repository names, count badges, and draft/CI breakdowns. Otherwise, it shows repository names, branches, changed-file counts, and file details. Short terminals limit section content and can omit sections entirely.
 
-## Subagents
+## Agents
 
-The **Subagents** section follows the session metrics. Each agent has a name line and a second line with status, cumulative runtime, and cost.
+The **Agents** section follows Conversation. Each agent has a name line and a second line with status, cumulative runtime, and cost. Main agent always appears first, even when no child agent has run. A green dot and `Running` show an active agent loop. A red dot and `Stopped` show an inactive loop.
 
-This includes foreground calls, detached runs, and nested descendants that pi-subagents reports. Entries remain after a child stops and survive reload, compaction, and `/tree` navigation within that branch. A green dot and `Running` mean at least one invocation is running. A red dot and `Stopped` mean none are running.
+Main agent runtime sums intervals from `agent_start` to `agent_end`. It includes tool execution and waits for foreground children, but excludes idle time between loops. Completed intervals persist in sidebar entries and replay on the active branch after reload, resume, tree navigation, and compaction. Runtime before this update is unavailable, including in older sessions. An abrupt process kill can lose the open interval.
 
-Runtime and cost combine the agent's invocations (`1m46s · $0.4660`). Parallel child durations are summed. Pending top-level children are not listed, and totals do not carry across Pi sessions. The section refreshes every second. It stays hidden until an agent appears.
+Main agent cost sums assistant response usage on the active branch. It excludes child, tool, and summary usage. It updates when a response completes, before Pi saves the response to the transcript.
+
+Conversation cost uses assistant usage on the active branch. It adds each child run's own cost once, plus summary usage and unrelated tool usage. It removes identifiable child usage from subagent tool totals before it adds child costs. Async tool results and status snapshots use canonical run keys, so both sources do not add the same run twice. Nested tool usage offsets persist in the session. For older foreground snapshots, the sidebar uses reported costs when it can identify them.
+
+Nested agent rows show each agent's own cost. They do not repeat the inclusive cost of the parent and its descendants. Historical reports can lack enough data to recover all costs. Reported costs are not invoices. Conversation shows three decimal places. Agent rows show four. Hidden rows and summaries mean visible agent rows alone can differ from Conversation cost.
+
+Child metrics include foreground calls, detached runs, and nested descendants that pi-subagents reports. Entries remain after a child stops and survive reload, compaction, and `/tree` navigation within that branch. A green dot and `Running` mean at least one invocation is running. A red dot and `Stopped` mean none are running.
+
+Child runtime and cost combine the agent's invocations (`1m46s · $0.4660`). Parallel child durations are summed. Pending top-level children are not listed, and totals do not carry across Pi sessions. The section refreshes every second.
 
 Async metrics use pi-subagents' validated run status. The sidebar accepts lifecycle versions 2 and 3, plus the unversioned workflow status from pi-subagents 0.45. Running state also uses event-bus RPC `data.fleet` version 1 as an ephemeral zero-metric fallback. A `subagent` call that omits `async` runs in the background with pi-subagents 0.41. Missing or invalid status data leaves recorded rows and totals intact. Use `/subagents-fleet` for detailed run inspection and controls.
+
+## Tasks
+
+Each task appears on one line with its status, subject, and active label when present. The section shows the completed task count. Deleted tasks are hidden. Tasks do not show per-task time or cost.
 
 ## Weekly Codex quota
 

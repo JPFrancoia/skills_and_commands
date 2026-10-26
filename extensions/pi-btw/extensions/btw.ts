@@ -27,10 +27,13 @@ import {
   Key,
   Markdown,
   Text,
+  isKeyRelease,
   matchesKey,
+  parseKey,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
+  type Component,
   type Focusable,
   type KeybindingsManager,
   type KeyId,
@@ -293,6 +296,10 @@ type BtwSessionRuntime = {
 };
 
 type OverlayRuntime = {
+  ownsInput: boolean;
+  unsubscribeInput?: () => void;
+  focus?: () => void;
+  unfocus?: () => void;
   handle?: OverlayHandle;
   refresh?: () => void;
   close?: () => void;
@@ -1367,6 +1374,7 @@ export class BtwOverlayComponent extends Container implements Focusable {
   set focused(value: boolean) {
     this._focused = value;
     this.input.focused = value;
+    if (!value) this.onFocusLost?.();
   }
 
   constructor(
@@ -1382,6 +1390,7 @@ export class BtwOverlayComponent extends Container implements Focusable {
     onUnfocus: () => void,
     onToggleWidth: () => void,
     getWorkspaceLabel: () => string = () => "local",
+    private readonly onFocusLost?: () => void,
   ) {
     super();
     this.tui = tui;
@@ -1563,6 +1572,24 @@ export class BtwOverlayComponent extends Container implements Focusable {
     }
 
     return (button & 1) === 0 ? -3 : 3;
+  }
+
+  handleMouse(event: {
+    type: string; wheelDelta?: number;
+    x: number; y: number; screenX: number; screenY: number; width: number; height: number;
+  }) {
+    if (event.type !== "wheel") return undefined;
+    this.scrollTranscript(event.wheelDelta ?? 0);
+    return {
+      handled: true as const,
+      target: {
+        component: this,
+        originX: event.screenX - event.x,
+        originY: event.screenY - event.y,
+        width: event.width,
+        height: event.height,
+      },
+    };
   }
 
   handleInput(data: string): void {
@@ -1786,10 +1813,10 @@ export default function (pi: ExtensionAPI) {
     }
 
     handle.setHidden(false);
-    if (handle.isFocused()) {
-      handle.unfocus();
+    if (overlayRuntime?.ownsInput) {
+      overlayRuntime.unfocus?.();
     } else {
-      handle.focus();
+      overlayRuntime?.focus?.();
     }
     overlayRuntime?.refresh?.();
   }
@@ -1801,7 +1828,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     handle.setHidden(false);
-    handle.focus();
+    overlayRuntime?.focus?.();
     overlayRuntime?.refresh?.();
   }
 
@@ -1827,13 +1854,10 @@ export default function (pi: ExtensionAPI) {
     // overlayOptions is resolved once at showOverlay time, so a width change
     // requires tearing down and re-opening the overlay. The close path persists
     // the draft into overlayDraft, and ensureOverlay restores it on reopen.
-    const wasFocused = overlayRuntime?.handle?.isFocused() ?? true;
+    const wasFocused = overlayRuntime?.ownsInput ?? true;
     dismissOverlay();
     await ensureOverlay(ctx);
-    if (!wasFocused) {
-      overlayRuntime?.handle?.unfocus();
-      overlayRuntime?.refresh?.();
-    }
+    if (!wasFocused) toggleOverlayFocus();
     setOverlayStatus(
       overlayWidthMode === "full"
         ? "Full-width mode. Shift+drag now selects only the dialog. Alt+w to restore the window."
@@ -2277,12 +2301,14 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    const runtime: OverlayRuntime = {};
+    const runtime: OverlayRuntime = { ownsInput: true };
     const closeRuntime = () => {
       if (runtime.closed) {
         return;
       }
       runtime.closed = true;
+      runtime.unsubscribeInput?.();
+      runtime.unsubscribeInput = undefined;
       if (activeBtwSession) {
         clearBtwSessionSubscriptions(activeBtwSession);
       }
@@ -2317,26 +2343,61 @@ export default function (pi: ExtensionAPI) {
               void dismissOrAbortOverlaySession();
             },
             () => {
-              overlayRuntime?.handle?.unfocus();
-              overlayRuntime?.refresh?.();
+              runtime.unfocus?.();
+              runtime.refresh?.();
             },
             () => {
               void toggleOverlayWidth(ctx);
             },
             () => activeBtwSession?.workspace?.label ?? "local",
+            () => {
+              // Let the host finish mounting the question before restoring foreground focus.
+              queueMicrotask(() => {
+                if (!runtime.closed && runtime.ownsInput && focusTui.getFocusedComponent && !runtime.handle?.isHidden() && !runtime.handle?.isFocused()) {
+                  runtime.focus?.();
+                }
+              });
+            },
           );
 
-          overlay.focused = runtime.handle?.isFocused() ?? true;
+          // Pi's renderers expose this public method, but the TUI interface omits it.
+          const focusTui = tui as TUI & { getFocusedComponent?: () => Component | null };
+          let returnFocus = focusTui.getFocusedComponent?.();
+          const isMounted = (component: Component, roots = tui.children): boolean =>
+            roots.some((root) => root === component || (root instanceof Container && isMounted(component, root.children)));
+          runtime.focus = () => {
+            const focused = focusTui.getFocusedComponent?.();
+            if (focused !== overlay) returnFocus = focused;
+            runtime.ownsInput = true;
+            runtime.handle?.focus();
+          };
+          runtime.unfocus = () => {
+            runtime.ownsInput = false;
+            // Redirect only to mounted inline components. Pi restores stacked overlays itself.
+            runtime.handle?.unfocus(returnFocus && isMounted(returnFocus) ? { target: returnFocus } : undefined);
+          };
+
+          // Inline questions can take host focus while remaining behind this overlay.
+          runtime.unsubscribeInput = ctx.ui.onTerminalInput((data) => {
+            const handle = runtime.handle;
+            if (runtime.closed || !runtime.ownsInput || !handle || handle.isHidden() || handle.isFocused() || isKeyRelease(data)) return;
+            if (data.startsWith("\x1b") && !parseKey(data) && !data.startsWith("\x1b[200~")) return;
+            overlay.handleInput(data);
+            return { consume: true };
+          });
+
+          overlay.focused = runtime.ownsInput;
           overlay.setDraft(overlayDraft);
           runtime.setDraft = (value) => {
             overlay.setDraft(value);
           };
           runtime.refresh = () => {
-            overlay.focused = runtime.handle?.isFocused() ?? false;
+            overlay.focused = runtime.ownsInput;
             overlay.refresh();
           };
           runtime.close = () => {
             overlayDraft = overlay.getDraft();
+            if (runtime.handle?.isFocused()) runtime.unfocus?.();
             closeRuntime();
           };
 
@@ -2353,7 +2414,8 @@ export default function (pi: ExtensionAPI) {
           overlayOptions: getOverlayOptions(),
           onHandle: (handle) => {
             runtime.handle = handle;
-            handle.focus();
+            if (runtime.focus) runtime.focus();
+            else handle.focus();
             if (runtime.closed) {
               closeRuntime();
             }
@@ -2361,11 +2423,10 @@ export default function (pi: ExtensionAPI) {
         },
       )
       .catch((error) => {
-        if (overlayRuntime === runtime) {
-          overlayRuntime = null;
-        }
+        closeRuntime();
         notify(ctx, error instanceof Error ? error.message : String(error), "error");
-      });
+      })
+      .finally(closeRuntime);
   }
 
   async function dispatchBtwCommand(name: string, args: string, ctx: ExtensionCommandContext): Promise<boolean> {

@@ -26,6 +26,8 @@ const TODO_WIDGET_KEY = "rpiv-todos";
 const WORKED_WORKTREE_ENTRY = "pi-sidebar-worktree-worked";
 const SUBAGENT_RUN_ENTRY = "pi-sidebar-subagent-run";
 const SUBAGENT_ASYNC_ENTRY = "pi-sidebar-subagent-async";
+const MAIN_AGENT_RUNTIME_ENTRY = "pi-sidebar-main-agent-runtime";
+const SUBAGENT_TOOL_USAGE_ENTRY = "pi-sidebar-subagent-tool-usage";
 const QUOTA_STATUS_KEYS = new Set(["pi-quotas-usage", "pi-quotas-token-status"]);
 const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const SUBAGENT_RPC_REQUEST_EVENT = "subagents:rpc:v1:request";
@@ -106,6 +108,8 @@ type SidebarState = {
 	thinkingLevel: string;
 	routedModel?: { id: string; thinkingLevel?: string };
 	stats: SessionStats;
+	mainAgent: { durationMs: number; cost: number };
+	mainAgentStartedAt?: number;
 	todos: TodoTask[];
 	gitRepos: GitRepo[];
 	openRequests?: { repos: OpenRequestCount[]; errors: string[] };
@@ -135,18 +139,52 @@ function nonNegativeNumber(value: unknown): number | undefined {
 }
 
 function addUsage(stats: SessionStats, usage: Usage | undefined): void {
-	stats.cost += number(usage?.cost?.total);
+	stats.cost += nonNegativeNumber(usage?.cost?.total) ?? 0;
 }
 
 function computeSessionStats(entries: readonly unknown[]): SessionStats {
 	const stats: SessionStats = { ...EMPTY_STATS };
+	// Child snapshots replace their reported tool usage, rather than adding it twice.
+	const covered = new Map<string, number>();
+	const runs = replaySubagents(entries).runs;
+	for (const raw of entries) {
+		const entry = raw as {
+			type?: string;
+			customType?: string;
+			data?: { toolCallId?: unknown; cost?: unknown };
+			message?: { role?: string; toolName?: string; toolCallId?: string; details?: unknown; usage?: Usage };
+		};
+		if (entry.type === "custom" && entry.customType === SUBAGENT_TOOL_USAGE_ENTRY) {
+			if (typeof entry.data?.toolCallId === "string" && nonNegativeNumber(entry.data.cost) !== undefined) covered.set(entry.data.toolCallId, entry.data.cost as number);
+		} else if (entry.type === "message" && entry.message?.role === "toolResult" && entry.message.toolName === "subagent" && entry.message.toolCallId) {
+			const message = entry.message;
+			const prefix = subagentRunPrefix(message.details, `foreground:${message.toolCallId}`);
+			if ([...runs.keys()].some((key) => key.startsWith(`${prefix}:`))) covered.set(message.toolCallId, nonNegativeNumber(message.usage?.cost?.total) ?? 0);
+		}
+	}
+	const historicalNested = new Map<string, number>();
+	for (const run of runs.values()) {
+		const id = !run.key.includes(":nested:") && /^foreground:(.+):\d+$/.exec(run.key)?.[1];
+		if (typeof id === "string" && id.includes("/")) historicalNested.set(id, (historicalNested.get(id) ?? 0) + run.cost);
+	}
+	for (const [id, cost] of historicalNested) {
+		if (!covered.has(id)) covered.set(id, cost);
+	}
+	const coveredByRoot = new Map<string, number>();
+	for (const [id, cost] of covered) {
+		const parts = id.split("/");
+		if (parts.slice(0, -1).some((_, index) => covered.has(parts.slice(0, index + 1).join("/")))) continue;
+		const root = parts[0]!;
+		coveredByRoot.set(root, (coveredByRoot.get(root) ?? 0) + cost);
+	}
 
 	for (const raw of entries) {
 		const entry = raw as {
 			type?: string;
 			usage?: Usage;
-			message?: { role?: string; usage?: Usage };
+			message?: { role?: string; toolCallId?: string; usage?: Usage };
 		};
+		if (entry.type === "usage" && entry.usage) addUsage(stats, entry.usage);
 		if (entry.type === "compaction") stats.compactions++;
 		if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
 			addUsage(stats, entry.usage);
@@ -157,7 +195,26 @@ function computeSessionStats(entries: readonly unknown[]): SessionStats {
 			stats.turns++;
 			addUsage(stats, entry.message.usage);
 		} else if (entry.message?.role === "toolResult") {
-			addUsage(stats, entry.message.usage);
+			stats.cost += Math.max(0, (nonNegativeNumber(entry.message.usage?.cost?.total) ?? 0) - (coveredByRoot.get(entry.message.toolCallId ?? "") ?? 0));
+		}
+	}
+	return stats;
+}
+
+function computeMainAgentStats(entries: readonly unknown[]): SidebarState["mainAgent"] {
+	const stats = { durationMs: 0, cost: 0 };
+	for (const raw of entries) {
+		const entry = raw as {
+			type?: string;
+			customType?: string;
+			data?: { durationMs?: unknown };
+			message?: { role?: string; usage?: Usage };
+		};
+		if (entry.type === "custom" && entry.customType === MAIN_AGENT_RUNTIME_ENTRY) {
+			stats.durationMs += nonNegativeNumber(entry.data?.durationMs) ?? 0;
+		}
+		if (entry.type === "message" && entry.message?.role === "assistant") {
+			stats.cost += nonNegativeNumber(entry.message.usage?.cost?.total) ?? 0;
 		}
 	}
 	return stats;
@@ -166,21 +223,30 @@ function computeSessionStats(entries: readonly unknown[]): SessionStats {
 function isTodoDetails(value: unknown): value is { tasks: TodoTask[]; nextId: number } {
 	if (!value || typeof value !== "object") return false;
 	const details = value as { tasks?: unknown; nextId?: unknown };
-	return Array.isArray(details.tasks) && typeof details.nextId === "number";
+	return Number.isSafeInteger(details.nextId) && Array.isArray(details.tasks) && details.tasks.every((task) =>
+		task && Number.isSafeInteger(task.id) && task.id > 0 && typeof task.subject === "string"
+		&& ["pending", "in_progress", "completed", "deleted"].includes(task.status)
+		&& (task.activeForm === undefined || typeof task.activeForm === "string"));
 }
 
-function replayTodos(entries: readonly unknown[]): TodoTask[] {
-	let tasks: TodoTask[] = [];
+function replayTodos(entries: readonly unknown[]): { todos: TodoTask[]; hasSnapshots: boolean } {
+	let todos: TodoTask[] = [];
+	let hasSnapshots = false;
 	for (const raw of entries) {
 		const entry = raw as {
-			type?: string;
+			type?: string; customType?: string; data?: unknown;
 			message?: { role?: string; toolName?: string; details?: unknown };
 		};
-		if (entry.type !== "message" || entry.message?.role !== "toolResult" || entry.message.toolName !== "todo") continue;
-		if (!isTodoDetails(entry.message.details)) continue;
-		tasks = entry.message.details.tasks.map((task) => ({ ...task }));
+		let tasks: TodoTask[];
+		if (entry.type === "custom" && entry.customType === "rpiv-todo-state" && isTodoDetails(entry.data)) {
+			hasSnapshots = true;
+			tasks = entry.data.tasks;
+		} else if (!hasSnapshots && entry.type === "message" && entry.message?.role === "toolResult" && entry.message.toolName === "todo" && isTodoDetails(entry.message.details)) {
+			tasks = entry.message.details.tasks;
+		} else continue;
+		todos = tasks.map((task) => ({ ...task }));
 	}
-	return tasks;
+	return { todos, hasSnapshots };
 }
 
 function replayWorkedWorktrees(entries: readonly unknown[]): Set<string> {
@@ -196,6 +262,8 @@ function replayWorkedWorktrees(entries: readonly unknown[]): Set<string> {
 function replaySubagents(entries: readonly unknown[]): { runs: Map<string, SubagentRun>; asyncRunDirs: Map<string, string> } {
 	const runs = new Map<string, SubagentRun>();
 	const asyncRunDirs = new Map<string, string>();
+	const aliases = new Set<string>();
+	const legacyInclusive = new Set<string>();
 	for (const [index, raw] of entries.entries()) {
 		const entry = raw as {
 			id?: unknown;
@@ -207,7 +275,14 @@ function replaySubagents(entries: readonly unknown[]): { runs: Map<string, Subag
 		};
 		if (entry.type === "custom" && entry.customType === SUBAGENT_RUN_ENTRY) {
 			const data = entry.data;
+			if (data?.removed === true && typeof data.key === "string") {
+				runs.delete(data.key);
+				legacyInclusive.delete(data.key);
+				continue;
+			}
 			if (!data || typeof data.key !== "string" || typeof data.agent !== "string" || !data.key || !data.agent) continue;
+			if (data.ownCost !== true && (data.key.startsWith("async:") || data.key.includes(":nested:"))) legacyInclusive.add(data.key);
+			else legacyInclusive.delete(data.key);
 			runs.set(data.key, {
 				key: data.key,
 				agent: sanitizePlainText(data.agent),
@@ -215,6 +290,10 @@ function replaySubagents(entries: readonly unknown[]): { runs: Map<string, Subag
 				durationMs: nonNegativeNumber(data.durationMs) ?? 0,
 				cost: nonNegativeNumber(data.cost) ?? 0,
 			});
+			continue;
+		}
+		if (entry.type === "custom" && entry.customType === SUBAGENT_TOOL_USAGE_ENTRY) {
+			if (typeof entry.data?.toolCallId === "string" && typeof entry.data.runId === "string") aliases.add(`foreground:${entry.data.toolCallId}`);
 			continue;
 		}
 		if (entry.type === "custom" && entry.customType === SUBAGENT_ASYNC_ENTRY) {
@@ -238,7 +317,21 @@ function replaySubagents(entries: readonly unknown[]): { runs: Map<string, Subag
 		const subagentDetails = details as { asyncId?: unknown; runId?: unknown; asyncDir?: unknown } | undefined;
 		const runId = typeof subagentDetails?.asyncId === "string" ? subagentDetails.asyncId : typeof subagentDetails?.runId === "string" ? subagentDetails.runId : undefined;
 		if (runId && typeof subagentDetails?.asyncDir === "string") asyncRunDirs.set(runId, subagentDetails.asyncDir);
-		for (const run of subagentRunsFromDetails(details, prefix, false)) runs.set(run.key, run);
+		if (runId) aliases.add(prefix);
+		for (const run of subagentRunsFromDetails(details, prefix, false)) {
+			runs.set(run.key, run);
+			legacyInclusive.delete(run.key);
+		}
+	}
+	for (const key of runs.keys()) {
+		if ([...aliases].some((prefix) => key.startsWith(`${prefix}:`))) runs.delete(key);
+	}
+	for (const key of [...legacyInclusive].sort((a, b) => b.length - a.length)) {
+		const run = runs.get(key);
+		if (!run) continue;
+		const path = key.includes(":nested:") ? key.slice(0, key.lastIndexOf(":")) : key;
+		const descendants = [...runs.values()].filter((child) => child.key.startsWith(`${path}:nested:`) || child.key.startsWith(`${path}:child:`) || child.key.startsWith(`${path}:step:`));
+		run.cost = Math.max(0, run.cost - descendants.reduce((sum, child) => sum + child.cost, 0));
 	}
 	return { runs, asyncRunDirs };
 }
@@ -524,6 +617,12 @@ function subagentRunsFromFleetStatus(value: unknown): SubagentRun[] | undefined 
 	return runs;
 }
 
+function subagentRunPrefix(details: unknown, fallback: string): string {
+	const data = details as { asyncId?: unknown; runId?: unknown } | undefined;
+	const id = data?.asyncId ?? data?.runId;
+	return typeof id === "string" && id ? `async:${id}` : fallback;
+}
+
 function nestedSubagentRuns(children: unknown, prefix: string, now = Date.now()): SubagentRun[] {
 	if (!Array.isArray(children)) return [];
 	const runs: SubagentRun[] = [];
@@ -542,15 +641,18 @@ function nestedSubagentRuns(children: unknown, prefix: string, now = Date.now())
 			: Math.max(recordedDuration, (running ? now : endedAt ?? startedAt) - startedAt);
 		const totalCost = child.totalCost && typeof child.totalCost === "object" ? child.totalCost as Record<string, unknown> : {};
 		const usage = child.usage && typeof child.usage === "object" ? child.usage as Record<string, unknown> : {};
-		if (agent) runs.push({
+		const start = runs.length;
+		if (Array.isArray(child.steps)) child.steps.forEach((step, index) => visit(step, `${path}:step:${index}`));
+		if (Array.isArray(child.children)) child.children.forEach((nested, index) => visit(nested, `${path}:child:${index}`));
+		const descendantsCost = runs.slice(start).reduce((sum, run) => sum + run.cost, 0);
+		const inclusiveCost = nonNegativeNumber(totalCost.costUsd);
+		if (agent) runs.splice(start, 0, {
 			key: `${prefix}:${path}:${typeof child.id === "string" ? child.id : ""}`,
 			agent: sanitizePlainText(agent),
 			running,
 			durationMs,
-			cost: nonNegativeNumber(totalCost.costUsd ?? usage.cost) ?? 0,
+			cost: inclusiveCost === undefined ? nonNegativeNumber(usage.cost) ?? 0 : Math.max(0, inclusiveCost - descendantsCost),
 		});
-		if (Array.isArray(child.steps)) child.steps.forEach((step, index) => visit(step, `${path}:step:${index}`));
-		if (Array.isArray(child.children)) child.children.forEach((nested, index) => visit(nested, `${path}:child:${index}`));
 	};
 	children.forEach((child, index) => visit(child, `nested:${index}`));
 	return runs;
@@ -558,6 +660,7 @@ function nestedSubagentRuns(children: unknown, prefix: string, now = Date.now())
 
 function subagentRunsFromDetails(details: unknown, prefix: string, runningOverride?: boolean): SubagentRun[] {
 	if (!details || typeof details !== "object") return [];
+	prefix = subagentRunPrefix(details, prefix);
 	const value = details as { results?: unknown; progress?: unknown };
 	const results = Array.isArray(value.results) ? value.results : [];
 	const progress = Array.isArray(value.progress) ? value.progress : [];
@@ -573,14 +676,17 @@ function subagentRunsFromDetails(details: unknown, prefix: string, runningOverri
 		const usage = result.usage && typeof result.usage === "object" ? result.usage as Record<string, unknown> : {};
 		const totalCost = result.totalCost && typeof result.totalCost === "object" ? result.totalCost as Record<string, unknown> : {};
 		const status = live.status ?? resultProgress.status;
+		const nested = nestedSubagentRuns(Array.isArray(live.children) ? live.children : result.children, `${prefix}:${index}`);
+		const descendantsCost = nested.reduce((sum, run) => sum + run.cost, 0);
+		const inclusiveCost = nonNegativeNumber(totalCost.costUsd);
 		runs.push({
 			key: `${prefix}:${index}`,
 			agent: sanitizePlainText(agentValue),
 			running: runningOverride ?? status === "running",
 			durationMs: nonNegativeNumber(live.durationMs ?? resultProgress.durationMs ?? summary.durationMs) ?? 0,
-			cost: nonNegativeNumber(totalCost.costUsd ?? usage.cost) ?? 0,
+			cost: inclusiveCost === undefined ? nonNegativeNumber(usage.cost) ?? 0 : Math.max(0, inclusiveCost - descendantsCost),
 		});
-		runs.push(...nestedSubagentRuns(Array.isArray(live.children) ? live.children : result.children, `${prefix}:${index}`));
+		runs.push(...nested);
 	}
 	return runs;
 }
@@ -601,7 +707,8 @@ function initialForegroundSubagents(args: unknown): SubagentRun[] {
 
 function subagentRunsFromAsyncStatus(value: unknown, runId: string, sessionId: string | undefined, now = Date.now()): SubagentRun[] | undefined {
 	if (!value || typeof value !== "object") return undefined;
-	const status = value as { lifecycleArtifactVersion?: unknown; runId?: unknown; sessionId?: unknown; mode?: unknown; steps?: unknown; totalCost?: unknown };
+	const status = value as { lifecycleArtifactVersion?: unknown; runId?: unknown; sessionId?: unknown; mode?: unknown; steps?: unknown; totalCost?: unknown; parentWorkflowRunId?: unknown };
+	if (status.parentWorkflowRunId) return undefined;
 	const supported = status.lifecycleArtifactVersion === undefined
 		? status.mode === "workflow"
 		: SUBAGENT_LIFECYCLE_VERSIONS.has(status.lifecycleArtifactVersion as number);
@@ -619,14 +726,16 @@ function subagentRunsFromAsyncStatus(value: unknown, runId: string, sessionId: s
 		if (step.status === "pending") continue;
 		if (typeof step.agent !== "string" || !step.agent) return undefined;
 		const totalCost = step.totalCost && typeof step.totalCost === "object" ? step.totalCost as Record<string, unknown> : {};
-		const cost = totalCost.costUsd === undefined ? workflowTotalCost ?? 0 : nonNegativeNumber(totalCost.costUsd);
+		const inclusiveCost = totalCost.costUsd === undefined ? workflowTotalCost : nonNegativeNumber(totalCost.costUsd);
+		const nested = nestedSubagentRuns(step.children, `async:${runId}:${index}`, now);
+		const cost = inclusiveCost === undefined ? 0 : Math.max(0, inclusiveCost - nested.reduce((sum, run) => sum + run.cost, 0));
 		const running = step.status === "running";
 		const startedAt = nonNegativeNumber(step.startedAt);
 		const recordedDuration = step.durationMs === undefined ? 0 : nonNegativeNumber(step.durationMs);
-		if (cost === undefined || recordedDuration === undefined) return undefined;
+		if ((totalCost.costUsd !== undefined && inclusiveCost === undefined) || recordedDuration === undefined) return undefined;
 		const durationMs = running && startedAt !== undefined ? Math.max(recordedDuration, now - startedAt) : recordedDuration;
 		runs.push({ key: `async:${runId}:${index}`, agent: sanitizePlainText(step.agent), running, durationMs, cost });
-		runs.push(...nestedSubagentRuns(step.children, `async:${runId}:${index}`, now));
+		runs.push(...nested);
 	}
 	return runs;
 }
@@ -804,7 +913,7 @@ function renderCore(state: SidebarState, theme: Theme, width: number, statuses: 
 		...row("cwd", theme.fg("dim", truncatePath(sanitizePlainText(collapseHome(state.ctx?.cwd ?? "")), width - 6) || "—")),
 		...row("🧹 compactions", theme.fg("text", String(state.stats.compactions)), 15),
 		...row("🔄 turns", theme.fg("text", String(state.stats.turns)), 15),
-		...row("💰 cost", theme.fg("text", `$${state.stats.cost.toFixed(3)}`), 15),
+		...row("💰 cost", theme.fg("text", `$${(state.stats.cost + [...state.subagentRuns.values()].reduce((sum, run) => sum + run.cost, 0)).toFixed(3)}`), 15),
 		"",
 		...meter("ctx", usage?.percent, theme.fg("text", contextText), true),
 	];
@@ -819,17 +928,24 @@ function renderCore(state: SidebarState, theme: Theme, width: number, statuses: 
 		const text = key === "pi-quotas-usage" ? usageStatus : cleanStatusText(statuses.get(key) ?? "");
 		if (text && (key !== "pi-quotas-usage" || quota)) lines.push(...row("", text));
 	}
+	lines.push(...extensionItems(theme, statuses, width));
 	return section(theme, "Conversation", lines, width);
 }
 
-function subagentItems(state: SidebarState, theme: Theme): string[] {
-	const agents = aggregateSubagents([...state.subagentRuns.values(), ...state.rpcSubagentRuns.values()]);
-	return agents.length
-		? agents.flatMap((agent) => [
-			`${theme.fg(agent.running ? "success" : "error", "●")} ${theme.fg("text", theme.bold(sanitizePlainText(agent.agent)))}`,
-			theme.fg("dim", `  ${agent.running ? "Running" : "Stopped"} · ${formatSubagentDuration(agent.durationMs)} · $${agent.cost.toFixed(4)}`),
-		])
-		: [];
+function agentItems(state: SidebarState, theme: Theme): string[] {
+	const agents = [
+		{
+			agent: "Main agent",
+			running: state.mainAgentStartedAt !== undefined,
+			durationMs: state.mainAgent.durationMs + (state.mainAgentStartedAt === undefined ? 0 : Math.max(0, Date.now() - state.mainAgentStartedAt)),
+			cost: state.mainAgent.cost,
+		},
+		...aggregateSubagents([...state.subagentRuns.values(), ...state.rpcSubagentRuns.values()]),
+	];
+	return agents.flatMap((agent) => [
+		`${theme.fg(agent.running ? "success" : "error", "●")} ${theme.fg("text", theme.bold(sanitizePlainText(agent.agent)))}`,
+		theme.fg("dim", `  ${agent.running ? "Running" : "Stopped"} · ${formatSubagentDuration(agent.durationMs)} · $${agent.cost.toFixed(4)}`),
+	]);
 }
 
 function todoItems(state: SidebarState, theme: Theme): { title: string; items: string[] } {
@@ -850,13 +966,12 @@ function todoItems(state: SidebarState, theme: Theme): { title: string; items: s
 }
 
 function extensionItems(theme: Theme, statuses: ReadonlyMap<string, string>, width: number): string[] {
-	return [...statuses.entries()]
-		.filter(([key, text]) => key !== "mcp" && key !== "mcp-auth" && !QUOTA_STATUS_KEYS.has(key) && cleanStatusText(text) !== "")
+	const text = [...statuses.entries()]
+		.filter(([key, text]) => key !== "mcp" && key !== "mcp-auth" && !QUOTA_STATUS_KEYS.has(key) && sanitizePlainText(text) !== "")
 		.sort(([a], [b]) => a.localeCompare(b))
-		.flatMap(([key, text]) => [
-			theme.fg("muted", sanitizePlainText(key)),
-			...wrapTextWithAnsi(cleanStatusText(text), Math.max(1, width - 2)).map((line) => `  ${line}`),
-		]);
+		.map(([, text]) => sanitizePlainText(text))
+		.join(" · ");
+	return text ? wrapTextWithAnsi(text, width).map((line) => theme.fg("dim", line)) : [];
 }
 
 function gitItems(state: SidebarState, theme: Theme, width: number): string[] {
@@ -927,18 +1042,12 @@ function renderSidebar(
 ): string[] {
 	const contentWidth = Math.max(8, width - 4);
 	const lines = renderCore(state, theme, contentWidth, statuses);
-	const agents = subagentItems(state, theme);
+	const agents = agentItems(state, theme);
 	const todos = todoItems(state, theme);
-	const extensions = extensionItems(theme, statuses, contentWidth);
 	const git = gitItems(state, theme, contentWidth);
 	const gitReserve = state.openRequests?.repos.length || state.rootRepo ? 5 : 3;
-	const extensionReserve = extensions.length ? 4 : 0;
-	fitSection(lines, theme, "Subagents", agents, contentWidth, height, gitReserve + extensionReserve + (todos.items.length ? 3 : 0));
-	fitSection(lines, theme, todos.title, todos.items, contentWidth, height, gitReserve + extensionReserve);
-	if (!agents.length && !todos.items.length) {
-		fitSection(lines, theme, "Activity", [theme.fg("dim", "No tasks or agents yet")], contentWidth, height, gitReserve + extensionReserve);
-	}
-	fitSection(lines, theme, "Extensions", extensions, contentWidth, height, gitReserve);
+	fitSection(lines, theme, "Agents", agents, contentWidth, height, gitReserve + (todos.items.length ? 3 : 0));
+	fitSection(lines, theme, todos.title, todos.items, contentWidth, height, gitReserve);
 	fitSection(lines, theme, "Git", git, contentWidth, height, 0);
 	return lines.slice(0, height).map((line) => `  ${truncateToWidth(line, contentWidth, "…")}`);
 }
@@ -1075,6 +1184,7 @@ export const __test__ = {
 	applyNumstat,
 	codexAccountId,
 	computeSessionStats,
+	computeMainAgentStats,
 	formatQuotaReset,
 	parseCodexWeeklyQuota,
 	quotaRemaining,
@@ -1109,6 +1219,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 		width: DEFAULT_WIDTH,
 		thinkingLevel: "off",
 		stats: { ...EMPTY_STATS },
+		mainAgent: { durationMs: 0, cost: 0 },
 		todos: [],
 		gitRepos: [],
 		openRequests: configuredRepos && { repos: configuredRepos.repos.map((repo) => ({ repo })), errors: configuredRepos.errors },
@@ -1136,12 +1247,38 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 
 	const statuses = () => footerData?.getExtensionStatuses() ?? new Map<string, string>();
 	const paint = () => compositor?.paint();
+	const updateTodos = (details: { tasks: TodoTask[] }, ctx: ExtensionContext) => {
+		const replayed = replayTodos(ctx.sessionManager.getBranch());
+		state.todos = (replayed.hasSnapshots ? replayed.todos : details.tasks).map((task) => ({ ...task }));
+	};
+	const removeForegroundAlias = (toolCallId: string, details: unknown) => {
+		const data = details as { asyncId?: unknown; runId?: unknown } | undefined;
+		const runId = typeof data?.asyncId === "string" ? data.asyncId : typeof data?.runId === "string" ? data.runId : undefined;
+		if (!runId) return;
+		for (const key of state.subagentRuns.keys()) {
+			if (key.startsWith(`foreground:${toolCallId}:`)) state.subagentRuns.delete(key);
+		}
+	};
+	const finishMainAgent = () => {
+		if (state.mainAgentStartedAt === undefined) return;
+		const durationMs = Math.max(0, Date.now() - state.mainAgentStartedAt);
+		state.mainAgentStartedAt = undefined;
+		state.mainAgent.durationMs += durationMs;
+		pi.appendEntry(MAIN_AGENT_RUNTIME_ENTRY, { durationMs });
+	};
+	const refreshConversationStats = (ctx: ExtensionContext, pendingMessage?: unknown) => {
+		const entries: unknown[] = [...ctx.sessionManager.getBranch()];
+		if (pendingMessage) entries.push({ type: "message", message: pendingMessage });
+		state.stats = computeSessionStats(entries);
+		state.stats.cost += Math.max(0, state.mainAgent.cost - computeMainAgentStats(entries).cost);
+	};
 	const updateSession = (ctx: ExtensionContext) => {
 		state.ctx = ctx;
 		state.title = pi.getSessionName() ?? fallbackTitle(ctx.sessionManager.getBranch());
 		state.thinkingLevel = String(ctx.thinkingLevel ?? pi.getThinkingLevel?.() ?? "off");
-		state.stats = computeSessionStats(ctx.sessionManager.getEntries());
-		state.todos = replayTodos(ctx.sessionManager.getBranch());
+		state.mainAgent = computeMainAgentStats(ctx.sessionManager.getBranch());
+		refreshConversationStats(ctx);
+		state.todos = replayTodos(ctx.sessionManager.getBranch()).todos;
 		state.context = ctx.getContextUsage();
 		state.routedModel = getRoutedModel(ctx);
 	};
@@ -1149,7 +1286,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 		try { ctx.ui.setWidget(TODO_WIDGET_KEY, undefined); } catch { /* stale replacement context */ }
 	};
 	const persistSubagentRun = (run: SubagentRun) => {
-		pi.appendEntry(SUBAGENT_RUN_ENTRY, { key: run.key, agent: run.agent, durationMs: run.durationMs, cost: run.cost });
+		pi.appendEntry(SUBAGENT_RUN_ENTRY, { key: run.key, agent: run.agent, durationMs: run.durationMs, cost: run.cost, ownCost: true });
 	};
 	const rememberSubagentRun = (run: SubagentRun, persist = false) => {
 		const previous = state.subagentRuns.get(run.key);
@@ -1167,7 +1304,8 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 		const sessionId = subagentSessionId(state.ctx);
 		const promise = Promise.all([...state.asyncRunDirs].map(async ([runId, asyncDir]) => {
 			try {
-				return { runId, runs: subagentRunsFromAsyncStatus(JSON.parse(await readFile(join(asyncDir, "status.json"), "utf8")), runId, sessionId) };
+				const status = JSON.parse(await readFile(join(asyncDir, "status.json"), "utf8"));
+				return { runId, runs: subagentRunsFromAsyncStatus(status, runId, sessionId) };
 			} catch {
 				return { runId, runs: undefined };
 			}
@@ -1180,10 +1318,14 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 					const previous = state.subagentRuns.get(run.key);
 					rememberSubagentRun(run, !previous || (!run.running && (previous.running || previous.durationMs !== run.durationMs || previous.cost !== run.cost)));
 				}
-				for (const [key, previous] of state.subagentRuns) {
-					if (key.startsWith(`async:${runId}:`) && !seen.has(key) && previous.running) state.subagentRuns.set(key, { ...previous, running: false });
+				for (const key of state.subagentRuns.keys()) {
+					if (key.startsWith(`async:${runId}:`) && !seen.has(key)) {
+						state.subagentRuns.delete(key);
+						pi.appendEntry(SUBAGENT_RUN_ENTRY, { key, removed: true });
+					}
 				}
 			}
+			if (state.ctx) refreshConversationStats(state.ctx);
 		});
 		asyncMetricsPromise = promise;
 		void promise.finally(() => {
@@ -1330,15 +1472,19 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 	};
 
 	const disposeAsyncStarted = pi.events.on("subagent:async-started", (raw) => {
-		const event = raw as { id?: unknown; asyncDir?: unknown; sessionId?: unknown };
+		const event = raw as { id?: unknown; asyncDir?: unknown; sessionId?: unknown; parentWorkflowRunId?: unknown };
 		const sessionId = subagentSessionId(state.ctx);
 		if (sessionId && event.sessionId !== sessionId) return;
-		if (typeof event.id === "string" && typeof event.asyncDir === "string") rememberAsyncDir(event.id, event.asyncDir, true);
+		if (event.parentWorkflowRunId) return;
+		if (typeof event.id === "string" && typeof event.asyncDir === "string") {
+			rememberAsyncDir(event.id, event.asyncDir, true);
+		}
 		void refreshAsyncMetrics();
 		void refreshSubagents();
 	});
 	const disposeAsyncComplete = pi.events.on("subagent:async-complete", (raw) => {
-		const event = raw as { runId?: unknown; id?: unknown; asyncDir?: unknown; sessionId?: unknown };
+		const event = raw as { runId?: unknown; id?: unknown; asyncDir?: unknown; sessionId?: unknown; parentWorkflowRunId?: unknown };
+		if (event.parentWorkflowRunId) return;
 		const sessionId = subagentSessionId(state.ctx);
 		if (sessionId && event.sessionId !== sessionId) return;
 		const runId = typeof event.runId === "string" ? event.runId : typeof event.id === "string" ? event.id : undefined;
@@ -1370,6 +1516,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 		footerFallbackTimer = undefined;
 		state.codexWeeklyQuota = undefined;
 		state.foregroundSubagents.clear();
+		state.mainAgentStartedAt = undefined;
 		updateSession(ctx);
 		if (ctx.mode !== "tui") return;
 
@@ -1458,25 +1605,39 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 		hideTodoWidget(ctx);
 		paint();
 	});
+	pi.on("agent_start", async (_event, ctx) => {
+		state.ctx = ctx;
+		state.mainAgentStartedAt ??= Date.now();
+		paint();
+	});
 	pi.on("message_end", async (event, ctx) => {
 		state.ctx = ctx;
 		if (event.message.role === "assistant") {
-			state.stats = computeSessionStats(ctx.sessionManager.getEntries());
+			state.mainAgent.cost = computeMainAgentStats(ctx.sessionManager.getBranch()).cost
+				+ (nonNegativeNumber(event.message.usage?.cost?.total) ?? 0);
+			refreshConversationStats(ctx, event.message);
 			state.context = ctx.getContextUsage();
 			// message_end runs before Pi persists this response in the session context.
 			state.routedModel = getRoutedModel(ctx, [...ctx.sessionManager.buildSessionProjection().messages, event.message]);
-		} else if (event.message.role === "toolResult" && event.message.toolName === "todo") {
-			if (isTodoDetails(event.message.details)) state.todos = event.message.details.tasks.map((task) => ({ ...task }));
-			hideTodoWidget(ctx);
+		} else if (event.message.role === "toolResult") {
+			refreshConversationStats(ctx, event.message);
+			if (event.message.toolName === "todo") {
+				if (isTodoDetails(event.message.details)) updateTodos(event.message.details, ctx);
+				hideTodoWidget(ctx);
+			}
 		}
 		paint();
 	});
 	pi.on("tool_result", async (event, ctx) => {
 		state.ctx = ctx;
-		if (event.toolName === "todo" && isTodoDetails(event.details)) state.todos = event.details.tasks.map((task) => ({ ...task }));
+		if (event.toolName === "todo" && isTodoDetails(event.details)) updateTodos(event.details, ctx);
 		if (event.toolName === "subagent") {
+			removeForegroundAlias(event.toolCallId, event.details);
 			const details = event.details as { asyncId?: unknown; runId?: unknown; asyncDir?: unknown } | undefined;
 			const runId = typeof details?.asyncId === "string" ? details.asyncId : typeof details?.runId === "string" ? details.runId : undefined;
+			if (event.toolCallId && (runId || subagentRunsFromDetails(event.details, `foreground:${event.toolCallId}`).length)) {
+				pi.appendEntry(SUBAGENT_TOOL_USAGE_ENTRY, { toolCallId: event.toolCallId, runId, cost: nonNegativeNumber(event.usage?.cost?.total) ?? 0 });
+			}
 			if (runId && typeof details?.asyncDir === "string") rememberAsyncDir(runId, details.asyncDir, true);
 			for (const run of subagentRunsFromDetails(event.details, `foreground:${event.toolCallId}`, false)) rememberSubagentRun(run, true);
 			void refreshAsyncMetrics();
@@ -1497,6 +1658,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 	pi.on("tool_execution_update", async (event) => {
 		if (event.toolName !== "subagent") return;
 		const partial = event.partialResult as { details?: unknown } | undefined;
+		removeForegroundAlias(event.toolCallId, partial?.details);
 		const runs = subagentRunsFromDetails(partial?.details, `foreground:${event.toolCallId}`);
 		if (runs.length) {
 			state.foregroundSubagents.set(event.toolCallId, runs);
@@ -1511,6 +1673,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 		}
 		state.foregroundSubagents.delete(event.toolCallId);
 		if (event.toolName === "subagent") {
+			removeForegroundAlias(event.toolCallId, event.result?.details);
 			void refreshAsyncMetrics();
 			void refreshSubagents();
 		}
@@ -1518,7 +1681,9 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 	});
 	pi.on("agent_end", async (_event, ctx) => {
 		state.ctx = ctx;
-		state.stats = computeSessionStats(ctx.sessionManager.getEntries());
+		finishMainAgent();
+		state.mainAgent = computeMainAgentStats(ctx.sessionManager.getBranch());
+		refreshConversationStats(ctx);
 		state.context = ctx.getContextUsage();
 		state.routedModel = getRoutedModel(ctx);
 		void refreshExternal(ctx);
@@ -1527,6 +1692,7 @@ export default function sidebarExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		finishMainAgent();
 		generation++;
 		if (typeof disposeAsyncStarted === "function") disposeAsyncStarted();
 		if (typeof disposeAsyncComplete === "function") disposeAsyncComplete();

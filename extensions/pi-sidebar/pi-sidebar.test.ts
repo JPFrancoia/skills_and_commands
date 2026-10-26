@@ -36,11 +36,68 @@ async function main(): Promise<void> {
 	]);
 	assert.deepEqual(stats, { turns: 2, compactions: 2, cost: 0.35000000000000003 });
 
+	const childResult = { type: "message", message: {
+		role: "toolResult", toolName: "subagent", toolCallId: "child-call",
+		usage: { cost: { total: 0.25 } }, details: { results: [{ agent: "worker", usage: { cost: 0.25 } }] },
+	} };
+	assert.equal(__test__.computeSessionStats([childResult]).cost, 0, "covered child usage is added from run metrics, not charged twice");
+	const usageOffset = (toolCallId: string, cost: unknown) => ({ type: "custom", customType: "pi-sidebar-subagent-tool-usage", data: { toolCallId, cost } });
+	const wrapperResult = { type: "message", message: { role: "toolResult", toolName: "codemode", toolCallId: "wrapper", usage: { cost: { total: 0.375 } } } };
+	assert.equal(__test__.computeSessionStats([
+		usageOffset("wrapper/0", 0.125), usageOffset("wrapper/1", 0.125), usageOffset("wrapper/1", 0.125), wrapperResult,
+	]).cost, 0.125, "nested children are removed once while unrelated tool usage remains");
+	assert.equal(__test__.computeSessionStats([
+		usageOffset("wrapper/0", 0.25), usageOffset("wrapper/0/0", 0.125), wrapperResult,
+	]).cost, 0.125, "a nested subagent's usage already covers its own nested tool usage");
+	assert.equal(__test__.computeSessionStats([
+		{ type: "custom", customType: "pi-sidebar-subagent-run", data: { key: "foreground:wrapper/0:0", agent: "worker", cost: 0.25 } },
+		{ type: "custom", customType: "pi-sidebar-subagent-run", data: { key: "foreground:wrapper/0:0:nested:0:review", agent: "reviewer", cost: 0.05 } },
+		wrapperResult,
+	]).cost, 0.125, "legacy nested-call offsets use root usage without counting descendant totals");
+	assert.equal(__test__.computeSessionStats([
+		usageOffset("wrapper/0", NaN), usageOffset("wrapper/1", -2), wrapperResult,
+	]).cost, 0.375, "invalid usage records never erase valid spending");
+	assert.equal(__test__.computeSessionStats([
+		{ type: "message", message: { role: "toolResult", toolName: "subagent", toolCallId: "unknown", usage: { cost: { total: 0.25 } } } },
+	]).cost, 0.25, "unknown child details retain the reported tool cost");
+	assert.equal(__test__.computeSessionStats([
+		{ type: "usage", usage: { cost: { total: 0.125 } } },
+		{ type: "compaction", usage: { cost: { total: 0.25 } } },
+		{ type: "branch_summary", usage: { cost: { total: 0.5 } } },
+		{ type: "message", message: { role: "assistant", usage: { cost: { total: -1 } } } },
+	]).cost, 0.875, "model-attributed, summary, and compaction usage are retained");
+
+	assert.deepEqual(__test__.computeMainAgentStats([
+		{ type: "message", message: { role: "assistant", usage: { cost: { total: 0.125 } } } },
+		{ type: "message", message: { role: "assistant", stopReason: "aborted", usage: { cost: { total: 0.25 } } } },
+		{ type: "message", message: { role: "assistant" } },
+		{ type: "message", message: { role: "assistant", usage: { cost: { total: -1 } } } },
+		{ type: "message", message: { role: "assistant", usage: { cost: { total: Infinity } } } },
+		{ type: "message", message: { role: "toolResult", usage: { cost: { total: 12 } } } },
+		{ type: "compaction", usage: { cost: { total: 3 } } },
+		{ type: "branch_summary", usage: { cost: { total: 4 } } },
+		{ type: "custom", customType: "pi-sidebar-main-agent-runtime", data: { durationMs: 60_000 } },
+		{ type: "custom", customType: "pi-sidebar-main-agent-runtime", data: { durationMs: 46_000 } },
+		{ type: "custom", customType: "pi-sidebar-main-agent-runtime", data: { durationMs: -1 } },
+		{ type: "custom", customType: "pi-sidebar-main-agent-runtime", data: { durationMs: NaN } },
+		{ type: "custom", customType: "pi-sidebar-main-agent-runtime", data: { durationMs: "1000" } },
+		{ type: "custom", customType: "pi-sidebar-main-agent-runtime" },
+		{ type: "custom", customType: "other", data: { durationMs: 999 } },
+	]), { durationMs: 106_000, cost: 0.375 });
+	assert.deepEqual(__test__.computeMainAgentStats([]), { durationMs: 0, cost: 0 });
+
 	const todos = __test__.replayTodos([
 		{ type: "message", message: { role: "toolResult", toolName: "todo", details: { tasks: [{ id: 1, subject: "old", status: "pending" }], nextId: 2 } } },
 		{ type: "message", message: { role: "toolResult", toolName: "todo", details: { tasks: [{ id: 1, subject: "done", status: "completed" }, { id: 2, subject: "removed", status: "deleted" }], nextId: 3 } } },
 	]);
-	assert.deepEqual(todos.map((todo) => [todo.subject, todo.status]), [["done", "completed"], ["removed", "deleted"]]);
+	assert.deepEqual(todos.todos.map((todo) => [todo.subject, todo.status]), [["done", "completed"], ["removed", "deleted"]]);
+	const taskSnapshot = (tasks: unknown[]) => ({ type: "custom", customType: "rpiv-todo-state", data: { tasks, nextId: 2 } });
+	const taskOne = { id: 1, subject: "Task one", status: "in_progress" };
+	assert.deepEqual(__test__.replayTodos([
+		taskSnapshot([taskOne]), taskSnapshot([]), taskSnapshot([{ ...taskOne, subject: "New task" }]),
+		{ type: "message", message: { role: "toolResult", toolName: "todo", details: { tasks: [{ ...taskOne, subject: "Stale result" }], nextId: 2 } } },
+	]), { todos: [{ ...taskOne, subject: "New task" }], hasSnapshots: true });
+	assert.deepEqual(__test__.replayTodos([taskSnapshot([{ id: "invalid" }])]).todos, []);
 
 	const parsed = __test__.parseStatus("## main...origin/main\0 M src/long/file.ts\0R  src/new.ts\0src/old.ts\0?? task-worktree/\0");
 	assert.equal(parsed.branch, "main");
@@ -216,11 +273,12 @@ async function main(): Promise<void> {
 		],
 	};
 	const asyncRuns = [
-		{ key: "async:run-1:0", agent: "worker", running: true, durationMs: 10_000, cost: 0.1 },
+		{ key: "async:run-1:0", agent: "worker", running: true, durationMs: 10_000, cost: 0.060000000000000005 },
 		{ key: "async:run-1:0:nested:0:nested-2", agent: "tainted-evidence", running: false, durationMs: 6_000, cost: 0.04 },
 		{ key: "async:run-1:1", agent: "worker", running: false, durationMs: 60_000, cost: 0.2 },
 	];
 	assert.deepEqual(__test__.subagentRunsFromAsyncStatus(asyncStatus, "run-1", "session-1", 11_000), asyncRuns);
+	assert.equal(__test__.subagentRunsFromAsyncStatus({ ...asyncStatus, parentWorkflowRunId: "parent-workflow" }, "run-1", "session-1"), undefined, "the parent workflow already reports these descendants");
 	assert.deepEqual(__test__.subagentRunsFromAsyncStatus({ ...asyncStatus, lifecycleArtifactVersion: 3 }, "run-1", "session-1", 11_000), asyncRuns);
 	assert.deepEqual(__test__.subagentRunsFromAsyncStatus({
 		runId: "workflow-1",
@@ -257,6 +315,39 @@ async function main(): Promise<void> {
 	]);
 	assert.deepEqual([...replayedSubagents.runs.values()], [{ key: "one", agent: "worker", running: false, durationMs: 60_000, cost: 0.2 }]);
 	assert.deepEqual([...replayedSubagents.asyncRunDirs], [["run-1", "/tmp/run-1"]]);
+	const aliasEntries = [
+		{ type: "message", message: { ...childResult.message, details: { runId: "same-run", results: childResult.message.details.results } } },
+		{ type: "custom", customType: "pi-sidebar-subagent-run", data: { key: "foreground:child-call:0", agent: "worker", durationMs: 1_000, cost: 0.25 } },
+		{ type: "custom", customType: "pi-sidebar-subagent-run", data: { key: "async:same-run:0", agent: "worker", durationMs: 1_000, cost: 0.5 } },
+	];
+	const canonical = __test__.replaySubagents(aliasEntries);
+	assert.deepEqual([...canonical.runs.keys()], ["async:same-run:0"]);
+	assert.equal(__test__.computeSessionStats(aliasEntries).cost, 0);
+	assert.equal([...canonical.runs.values()].reduce((sum, run) => sum + run.cost, 0), 0.5, "late async snapshots replace earlier tool results");
+	const nestedAlias = __test__.replaySubagents([
+		{ type: "custom", customType: "pi-sidebar-subagent-tool-usage", data: { toolCallId: "wrapper/0", runId: "same-run", cost: 0.25 } },
+		{ type: "custom", customType: "pi-sidebar-subagent-run", data: { key: "foreground:wrapper/0:0", agent: "worker", cost: 0.25 } },
+		aliasEntries[2],
+	]);
+	assert.deepEqual([...nestedAlias.runs.keys()], ["async:same-run:0"]);
+	const legacyTree = __test__.replaySubagents([
+		{ type: "custom", customType: "pi-sidebar-subagent-run", data: { key: "async:legacy:0", agent: "worker", cost: 0.5 } },
+		{ type: "custom", customType: "pi-sidebar-subagent-run", data: { key: "async:legacy:0:nested:0:review", agent: "reviewer", cost: 0.25 } },
+		{ type: "custom", customType: "pi-sidebar-subagent-run", data: { key: "async:legacy:0:nested:0:child:0:scout", agent: "scout", cost: 0.125 } },
+	]);
+	assert.deepEqual([...legacyTree.runs.values()].map((run) => run.cost), [0.25, 0.125, 0.125]);
+	const ownTree = __test__.replaySubagents([...legacyTree.runs.values()].map((run) => ({ type: "custom", customType: "pi-sidebar-subagent-run", data: { ...run, ownCost: true } })));
+	assert.deepEqual([...ownTree.runs.values()], [...legacyTree.runs.values()], "replay never subtracts descendants twice");
+	assert.deepEqual([...__test__.replaySubagents([
+		...aliasEntries,
+		{ type: "custom", customType: "pi-sidebar-subagent-run", data: { key: "async:same-run:0", removed: true } },
+	]).runs.values()], [], "removed snapshot rows do not return after reload");
+	const inclusiveTree = __test__.subagentRunsFromDetails({ results: [{
+		agent: "worker", totalCost: { costUsd: 0.5 },
+		children: [{ id: "review", agent: "reviewer", totalCost: { costUsd: 0.25 }, children: [{ id: "scout", agent: "scout", totalCost: { costUsd: 0.125 } }] }],
+	}] }, "foreground:tree");
+	assert.deepEqual(inclusiveTree.map((run) => [run.agent, run.cost]), [["worker", 0.25], ["reviewer", 0.125], ["scout", 0.125]]);
+	assert.equal(inclusiveTree.reduce((sum, run) => sum + run.cost, 0), 0.5, "inclusive descendants appear once");
 	const token = [
 		"header",
 		Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "account-123" } })).toString("base64url"),
@@ -313,6 +404,7 @@ async function main(): Promise<void> {
 		width: 48,
 		thinkingLevel: "high",
 		stats: { cost: 0, turns: 0, compactions: 2 },
+		mainAgent: { durationMs: 0, cost: 0 },
 		todos: [],
 		gitRepos: [],
 		linkedWorktrees: [],
@@ -382,9 +474,17 @@ async function main(): Promise<void> {
 	state.context = { tokens: 18_000, contextWindow: 500_000, percent: 3.7 };
 	assert.match(plain(), /ctx +▌░{13} +3\.7% • 18k \/ 500k/);
 	state.context = { tokens: 83_000, contextWindow: 100_000, percent: 83 };
-	assert.match(plain(), /ACTIVITY/);
-	assert.match(plain(), /No tasks or agents yet/);
-	assert.doesNotMatch(plain(), /SUBAGENTS|TASKS 0\/0|none used|no todos/);
+	assert.match(plain(), /AGENTS[^\n]*\n● Main agent\nStopped · 0s · \$0\.0000/);
+	const screenshotCosts = [0.0270, 0.1570, 7.3369, 0.5997, 0.7161, 0.0744, 0.0038];
+	assert.match(__test__.renderSidebar({ ...state, stats: { cost: 31.2202, turns: 471, compactions: 4 },
+		mainAgent: { durationMs: 0, cost: 31.2202 }, subagentRuns: new Map(screenshotCosts.map((cost, index) => [String(index), { key: String(index), agent: `child-${index}`, running: false, durationMs: 0, cost }])),
+	} as never, theme as never, new Map(), 53, 100).join("\n"), /💰 cost +\$40\.135/, "the screenshot values now include reported child spending");
+	assert.doesNotMatch(plain(), /SUBAGENTS|ACTIVITY|No tasks or agents yet|TASKS 0\/0|none used|no todos/);
+	state.subagentRuns.set("same-name", { key: "same-name", agent: "Main agent", running: false, durationMs: 1_000, cost: 0.25 });
+	assert.equal((plain().match(/● Main agent/g) ?? []).length, 2, "main metrics never merge with child names");
+	assert.match(plain(), /💰 cost +\$0\.250/);
+	assert.match(plain(), /Stopped · 0s · \$0\.0000\n● Main agent\nStopped · 1s · \$0\.2500/);
+	state.subagentRuns.clear();
 	assert.doesNotMatch(plain(), /\x1b\[2J|clean-sibling/);
 	assert.match(plain(), /• main spoofed +1 changed/);
 	state.context = { tokens: 110_000, contextWindow: 100_000, percent: 110 };
@@ -393,9 +493,30 @@ async function main(): Promise<void> {
 	assert.doesNotMatch(render(48, 100, new Map([["mcp", "MCP connected"], ["mcp-auth", "MCP auth"]])).join("\n"), /MCP/);
 	const statuses = new Map([["ponytail", "⚡ FULL"], ["quota", "7d:2% left (in 5d 23h 41m) cap:OK"], ["unsafe\x1b[2J", "\x1b[32mready\x1b[0m\x1b[2J\nnext"]]);
 	const statusLines = render(48, 100, statuses);
-	assert.match(statusLines.join("\n"), /ponytail\n +⚡ FULL/);
-	assert.match(statusLines.join("\n"), /quota\n +7d:2% left/);
-	assert.doesNotMatch(statusLines.join("\n"), /\x1b\[2J/);
+	assert.match(statusLines.join("\n"), /⚡ FULL · 7d:2% left/);
+	assert.doesNotMatch(statusLines.join("\n"), /EXTENSIONS|ponytail|unsafe|\x1b\[2J/);
+	const compactStatuses = new Map([
+		["ponytail", "\x1b[1;33m○ 🐴 ponytail: ⚡ FULL\x1b[0m"],
+		["mcp-status", "🔌 2"],
+		["empty", "\x1b[31m\x1b[0m"],
+	]);
+	const compactOutput = render(53, 100, compactStatuses);
+	const compactLine = compactOutput.find((line) => line.includes("🔌"))!;
+	assert.equal(compactLine.trim(), "🔌 2 · ○ 🐴 ponytail: ⚡ FULL");
+	assert.equal(compactOutput.indexOf(compactLine), compactOutput.findIndex((line) => line.includes("quota")) + 1);
+	assert.ok(compactOutput.indexOf(compactLine) < compactOutput.findIndex((line) => line.includes("AGENTS")));
+	assert.doesNotMatch(compactOutput.join("\n"), /EXTENSIONS|mcp-status|empty|\x1b\[/);
+	const statusColors: string[] = [];
+	render(53, 100, compactStatuses, { ...theme, fg: (color, text) => {
+		if (text.includes("🔌")) statusColors.push(color);
+		return text;
+	} });
+	assert.deepEqual(statusColors, ["dim"]);
+	const narrowStatuses = render(20, 100, compactStatuses);
+	assert.ok(narrowStatuses.every((line) => visibleWidth(line) <= 20));
+	assert.match(narrowStatuses.join("\n"), /FULL/);
+	assert.match(render(53, 24, compactStatuses).join("\n"), /GIT/);
+	assert.deepEqual(render(53, 100, new Map([["empty", "\x1b[31m\x1b[0m"]])), render(53));
 
 	const quotaStatuses = new Map([
 		["pi-quotas-usage", "\x1b[32m7d:2% left\x1b[0m (in 5d 23h 41m) \x1b[2mcap:\x1b[0m\x1b[32mOK\x1b[0m\x1b[2J"],
@@ -403,13 +524,14 @@ async function main(): Promise<void> {
 		["ponytail", "⚡ FULL"],
 	]);
 	const quotaOutput = render(53, 100, quotaStatuses).join("\n");
-	const extensionsStart = quotaOutput.indexOf("EXTENSIONS");
-	assert.ok(quotaOutput.indexOf("quota") < extensionsStart);
-	assert.ok(quotaOutput.indexOf("7d:2% left") < extensionsStart);
-	assert.ok(quotaOutput.indexOf("5h:$1.00") < extensionsStart);
+	const extensionStatusStart = quotaOutput.indexOf("⚡ FULL");
+	assert.ok(quotaOutput.indexOf("quota") < extensionStatusStart);
+	assert.ok(quotaOutput.indexOf("7d:2% left") < extensionStatusStart);
+	assert.match(quotaOutput, /5h:\$1\.00 · wk:\$2\.00 · mo:\$3\.00\n +⚡ FULL/);
+	assert.ok(extensionStatusStart < quotaOutput.indexOf("AGENTS"));
 	assert.equal(quotaOutput.split("7d:2% left").length, 2);
 	assert.doesNotMatch(quotaOutput, /pi-quotas-usage|pi-quotas-token-status|\x1b\[2J|[╭╮╰╯│]/);
-	assert.match(quotaOutput.slice(extensionsStart), /ponytail/);
+	assert.doesNotMatch(quotaOutput, /EXTENSIONS|ponytail/);
 	assert.match(quotaOutput, /quota +▎░{13} +\x1b\[32m7d:2% left/);
 	assert.doesNotMatch(quotaOutput, /cap:/);
 	for (const cap of ["cap:OK", "cap:\x1b[32mOK\x1b[0m", "\x1b[2mcap:\x1b[0m\x1b[32mOK\x1b[0m"]) {
@@ -523,8 +645,15 @@ async function main(): Promise<void> {
 	assert.match(plain(), /✓ Inspect the layout/);
 	assert.match(plain(), /● Build the dashboard \(building\)/);
 	assert.match(plain(), /○ Verify Unicode/);
+	const taskLines = plain().split("\n");
+	assert.deepEqual(taskLines.slice(
+		taskLines.findIndex((line) => line.includes("TASKS 1/3")) + 1,
+		taskLines.findIndex((line) => line.includes("GIT")),
+	).filter(Boolean), ["✓ Inspect the layout", "● Build the dashboard (building)", "○ Verify Unicode 日本語 🐴"], "tasks have no time or cost lines");
 	assert.doesNotMatch(plain(), /Hidden task|ACTIVITY/);
-	assert.match(plain(), /SUBAGENTS/);
+	assert.match(plain(), /AGENTS/);
+	assert.doesNotMatch(plain(), /SUBAGENTS/);
+	assert.ok(plain().indexOf("Main agent") < plain().indexOf("worker"));
 	assert.match(plain(), /Running · 1m46s · \$0\.4660/);
 	for (const width of [20, 40, 53, 80]) {
 		for (const height of [1, 12, 24, 45, 100]) {
@@ -536,8 +665,8 @@ async function main(): Promise<void> {
 			}
 		}
 	}
-	assert.match(plainLines(render(20)), /🧹 compactions +2\n🔄 turns +0\n💰 cost +\$\n0\n\.\n0\n0\n0/);
-	assert.match(render(40, 32, statuses).join("\n"), /… \d+ more/);
+	assert.match(plainLines(render(20)), /🧹 compactions +2\n🔄 turns +0\n💰 cost +\$\n0\n\.\n4\n6\n6/);
+	assert.match(render(40, 30, statuses).join("\n"), /… \d+ more/);
 	state.context = { tokens: null, contextWindow: 100_000, percent: null };
 	assert.match(plain(), /ctx +░{14} +— • \? \/ 100k/);
 	state.context = undefined;
@@ -613,9 +742,11 @@ async function main(): Promise<void> {
 			screen.rows = 70;
 			const hostTui = { terminal: screen, doRender() {}, requestRender() {}, stopped: false };
 			let footer: any;
+			const entries: any[] = [];
+			let branch = entries;
 			const ctx: any = {
 				mode: "tui", cwd: tmpdir(),
-				sessionManager: { getSessionFile: () => undefined, getSessionId: () => undefined, getEntries: () => [], getBranch: () => [], buildSessionProjection: () => ({ messages: [] }) },
+				sessionManager: { getSessionFile: () => undefined, getSessionId: () => undefined, getEntries: () => entries, getBranch: () => branch, buildSessionProjection: () => ({ messages: [] }) },
 				getContextUsage: () => undefined,
 				ui: {
 					theme, setWidget() {}, notify() {},
@@ -625,7 +756,8 @@ async function main(): Promise<void> {
 			sidebarExtension({
 				on: (name: string, handler: Function) => handlers.set(name, handler),
 				registerCommand: (name: string, command: any) => commands.set(name, command),
-				getSessionName: () => undefined, getThinkingLevel: () => "off", appendEntry() {},
+				getSessionName: () => undefined, getThinkingLevel: () => "off",
+				appendEntry: (customType: string, data: unknown) => branch.push({ type: "custom", customType, data }),
 				events: {
 					on: (name: string, listener: Function) => { listeners.set(name, listener); return () => listeners.delete(name); },
 					emit: (_name: string, request: any) => listeners.get(`subagents:rpc:v1:reply:${request.requestId}`)?.({ success: true, data: { fleet: { version: 1, entries: [] } } }),
@@ -651,6 +783,83 @@ async function main(): Promise<void> {
 					assert.ok(calls.includes("git"));
 					assert.ok(calls.every((bin) => bin === "git"));
 					assert.match(lastFrame(), /not a git repository/);
+					const realNow = Date.now;
+					let clock = 0;
+					const runtimeEntries = () => entries.filter((entry) => entry.customType === "pi-sidebar-main-agent-runtime");
+					try {
+						Date.now = () => clock;
+						await handlers.get("agent_start")!({}, ctx);
+						clock += 2_000;
+						await handlers.get("agent_start")!({}, ctx);
+						const response = { role: "assistant", usage: { cost: { total: 0.125 } } };
+						await handlers.get("message_end")!({ message: response }, ctx);
+						assert.match(lastFrame(), /Running · 2s · \$0\.1250/);
+						assert.match(lastFrame(), /💰 cost +\$0\.125/, "Conversation includes the response before persistence");
+						entries.push({ type: "message", message: response });
+						entries.push({ type: "message", message: { role: "toolResult", toolName: "subagent", usage: { cost: { total: 9 } } } });
+						clock += 3_000;
+						await handlers.get("session_compact")!({}, ctx);
+						assert.match(lastFrame(), /Running · 5s · \$0\.1250/);
+						await handlers.get("agent_end")!({}, ctx);
+						assert.match(lastFrame(), /Stopped · 5s · \$0\.1250/);
+						assert.equal(runtimeEntries().length, 1);
+						clock += 60_000;
+						await handlers.get("agent_end")!({}, ctx);
+						assert.equal(runtimeEntries().length, 1, "duplicate end does not record idle time");
+						assert.match(lastFrame(), /Stopped · 5s · \$0\.1250/);
+						await handlers.get("agent_start")!({}, ctx);
+						clock += 2_000;
+						await handlers.get("agent_end")!({}, ctx);
+						assert.match(lastFrame(), /Stopped · 7s · \$0\.1250/);
+						await handlers.get("session_start")!({}, ctx);
+						await commands.get("sidebar").handler("refresh", ctx);
+						assert.match(lastFrame(), /Stopped · 7s · \$0\.1250/);
+						branch = [];
+						await handlers.get("session_tree")!({}, ctx);
+						assert.match(lastFrame(), /Stopped · 0s · \$0\.0000/);
+						branch = entries;
+						await handlers.get("session_tree")!({}, ctx);
+						assert.match(lastFrame(), /Stopped · 7s · \$0\.1250/);
+						await handlers.get("agent_start")!({}, ctx);
+						clock += 1_000;
+						await handlers.get("session_shutdown")!({}, ctx);
+						assert.deepEqual(runtimeEntries().map((entry) => entry.data.durationMs), [5_000, 2_000, 1_000]);
+						await handlers.get("session_start")!({}, ctx);
+						await commands.get("sidebar").handler("refresh", ctx);
+						assert.match(lastFrame(), /Stopped · 8s · \$0\.1250/);
+
+						branch = [
+							{ type: "custom", customType: "pi-sidebar-task-metrics", data: { taskKey: "0:1", durationMs: 99_000, cost: 99 } },
+							{ type: "custom", customType: "rpiv-todo-state", data: { tasks: [{ id: 1, subject: "Plain task", status: "in_progress", activeForm: "working" }], nextId: 2 } },
+						];
+						await handlers.get("session_start")!({}, ctx);
+						assert.match(lastFrame(), /● Plain task \(working\)/);
+						assert.doesNotMatch(lastFrame(), /99s|\$99/);
+						await handlers.get("agent_start")!({}, ctx);
+						clock += 2_000;
+						await handlers.get("message_end")!({ message: response }, ctx);
+						branch.push({ type: "message", message: response });
+						await handlers.get("tool_execution_start")!({ toolName: "subagent", toolCallId: "retraction-child", args: { agent: "worker", async: false } }, ctx);
+						const childDetails = { results: [{ agent: "worker", usage: { cost: 0.25 } }] };
+						await handlers.get("tool_execution_update")!({ toolName: "subagent", toolCallId: "retraction-child", partialResult: { details: childDetails } }, ctx);
+						await handlers.get("tool_result")!({ toolName: "subagent", toolCallId: "retraction-child", details: { ...childDetails, runId: "canonical-child" }, usage: { cost: { total: 0.25 } } }, ctx);
+						await handlers.get("tool_execution_end")!({ toolName: "subagent", toolCallId: "retraction-child", result: { details: { ...childDetails, runId: "canonical-child" } } }, ctx);
+						const completedTasks = { tasks: [{ id: 1, subject: "Plain task", status: "completed" }], nextId: 2 };
+						branch.push({ type: "custom", customType: "rpiv-todo-state", data: completedTasks });
+						await handlers.get("tool_result")!({ toolName: "todo", details: completedTasks }, ctx);
+						await handlers.get("message_end")!({ message: { role: "toolResult", toolName: "todo", details: completedTasks } }, ctx);
+						await handlers.get("agent_end")!({}, ctx);
+						await commands.get("sidebar").handler("refresh", ctx);
+						assert.match(lastFrame(), /Stopped · 2s · \$0\.1250/, "main metrics remain intact");
+						assert.match(lastFrame(), /💰 cost +\$0\.375/, "Conversation still removes foreground aliases");
+						await handlers.get("session_shutdown")!({}, ctx);
+						await handlers.get("session_start")!({}, ctx);
+						assert.equal(branch.filter((entry) => entry.customType === "pi-sidebar-task-metrics").length, 1, "task changes and runs no longer write task metrics");
+						assert.match(lastFrame(), /✓ Plain task/);
+						assert.match(lastFrame(), /💰 cost +\$0\.375/);
+					} finally {
+						Date.now = realNow;
+					}
 				} else {
 					assert.ok(!calls.includes("git"));
 					if (config.includes("github.com")) {
