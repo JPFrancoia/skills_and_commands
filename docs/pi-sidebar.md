@@ -149,7 +149,7 @@ Git worktree membership and Git state refresh every 15 seconds and after relevan
 
 The restored package passed its adjacent tests on Pi 1.4.0. Terminal checks covered scrolling, width changes, on/off, narrow-window hiding, reload, and the `/git` overlay. Fullscreen checks also loaded the user's existing extensions.
 
-One scrolling capture showed a briefly blank sidebar before repainting. Fullscreen does not eliminate redraw flicker. Mouse selection, inline images, and a real external editor were not tested.
+One scrolling capture showed a briefly blank sidebar before repainting. Pi's fullscreen renderer erases whole rows, including sidebar cells. The compositor now adds the sidebar paint to the same synchronized output frame as Pi's render. Terminals that support synchronized output, such as iTerm2, then show both together. This fix has unit-test coverage only. No terminal capture confirms it yet. Mouse selection, inline images, and a real external editor were not tested.
 
 The dashboard redesign also passed layout checks at widths 20, 40, 53, and 80, including Unicode text and unknown context usage. Real Pi checks covered reload, width changes, narrow-window hiding, and restoration. Populated and empty fixtures were inspected in xterm with dark and light themes.
 

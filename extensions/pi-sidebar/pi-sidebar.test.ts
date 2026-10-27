@@ -394,7 +394,7 @@ async function main(): Promise<void> {
 	let renders = 0;
 	const tui = {
 		terminal,
-		doRender() { renders++; },
+		doRender() { renders++; terminal.write("\x1b[?2026h\x1b[1;1H\x1b[2Kmain\x1b[?2026l"); },
 		requestRender() {},
 		stopped: false,
 	};
@@ -420,7 +420,11 @@ async function main(): Promise<void> {
 	assert.equal(terminal.columns, 71);
 	tui.doRender();
 	assert.equal(renders, 1);
-	assert.match(terminal.writes.join(""), /\x1b\[\?2026h/);
+	// Pi's frame and the sidebar must share one synchronized write, or iTerm2 flickers.
+	assert.equal(terminal.writes.length, 1);
+	assert.equal(terminal.writes[0]!.match(/\x1b\[\?2026h/g)?.length, 1);
+	assert.match(terminal.writes[0]!, /^\x1b\[\?2026h\x1b\[1;1H\x1b\[2Kmain\x1b7[\s\S]*│[\s\S]*\x1b8\x1b\[\?2026l$/);
+	assert.equal(Object.hasOwn(terminal, "write"), false);
 	terminal.writes = [];
 	tui.stopped = true;
 	compositor.paint();

@@ -36,6 +36,8 @@ const SUBAGENT_RPC_TIMEOUT_MS = 500;
 const SUBAGENT_LIFECYCLE_VERSIONS = new Set([2, 3]);
 const PRUNED_DIRS = new Set([".cache", ".next", ".venv", "build", "dist", "node_modules", "target", "vendor", "venv"]);
 const GIT_REFRESH_TOOLS = new Set(["edit", "write"]);
+const BEGIN_SYNC = "\x1b[?2026h";
+const END_SYNC = "\x1b[?2026l";
 
 type Usage = {
 	cost?: { total?: number };
@@ -1114,21 +1116,43 @@ class SidebarCompositor {
 			},
 		});
 		this.tui.doRender = function () {
-			self.originalDoRender!.call(self.tui);
-			self.paint();
+			// Fullscreen rows use \x1b[2K, which erases sidebar cells. Paint in Pi's frame so the terminal never shows the gap.
+			const chunks: string[] = [];
+			const ownWrite = Object.getOwnPropertyDescriptor(self.terminal, "write");
+			self.terminal.write = (data: string) => { chunks.push(data); };
+			try {
+				self.originalDoRender!.call(self.tui);
+			} finally {
+				if (ownWrite) Object.defineProperty(self.terminal, "write", ownWrite);
+				else Reflect.deleteProperty(self.terminal, "write");
+			}
+			const frame = chunks.join("");
+			const sidebar = self.paintBuffer();
+			if (!sidebar) {
+				if (frame) self.originalWrite(frame);
+			} else if (frame.endsWith(END_SYNC)) {
+				self.originalWrite(frame.slice(0, -END_SYNC.length) + sidebar + END_SYNC);
+			} else {
+				self.originalWrite(`${frame}${BEGIN_SYNC}${sidebar}${END_SYNC}`);
+			}
 		};
 		return true;
 	}
 
 	paint(): void {
-		if (this.disposed || this.tui.stopped) return;
+		const sidebar = this.paintBuffer();
+		if (sidebar) this.originalWrite(`${BEGIN_SYNC}${sidebar}${END_SYNC}`);
+	}
+
+	private paintBuffer(): string | undefined {
+		if (this.disposed || this.tui.stopped) return undefined;
 		const state = this.getState();
 		const rawColumns = this.rawColumns();
-		if (!state.enabled || rawColumns < state.width + MIN_MAIN_WIDTH + 1) return;
+		if (!state.enabled || rawColumns < state.width + MIN_MAIN_WIDTH + 1) return undefined;
 		const rows = this.terminal.rows ?? process.stdout.rows ?? 24;
 		const separatorColumn = rawColumns - state.width;
 		const content = renderSidebar(state, this.getTheme(), this.getStatuses(), state.width, rows);
-		let buffer = "\x1b[?2026h\x1b7\x1b[?7l";
+		let buffer = "\x1b7\x1b[?7l";
 		for (let row = 1; row <= rows; row++) {
 			buffer += `\x1b[${row};${separatorColumn}H`;
 			buffer += this.getTheme().fg("borderMuted", "│");
@@ -1136,8 +1160,7 @@ class SidebarCompositor {
 			const line = truncateToWidth(content[row - 1] ?? "", state.width, "", true);
 			buffer += padAnsi(line, state.width);
 		}
-		buffer += "\x1b[0m\x1b[?7h\x1b8\x1b[?2026l";
-		this.originalWrite(buffer);
+		return `${buffer}\x1b[0m\x1b[?7h\x1b8`;
 	}
 
 	requestRender(): void {
