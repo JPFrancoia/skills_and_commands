@@ -4,7 +4,7 @@
 - [Background Git commands](background-git-commands.md) — `/m` and `/pr` target selection and staged-change workflows.
 - [Custom Pi sidebar](pi-sidebar.md) — installation, displayed data, commands, REPOS request counts, Git discovery, and troubleshooting.
 - [Pi recap](pi-recap.md) — three-line recap behavior, model configuration, privacy, installation, and validation.
-- [Pi Jev router](pi-jev-router.md) — three-level Codex routing, limits, privacy, installation, and validation.
+- [Pi Jev router](pi-jev-router.md) — task-aware Codex routing, limits, privacy, installation, and validation.
 - [MCP status indicator](pi-mcp-status.md) — footer count, local refresh, limitations, installation, and validation.
 - [Local Pi resources](local-resources.md) — local extension packages, prompt files, agent scan paths, and extension tests.
 - [Pi session auto-rename](pi-session-auto-rename.md) — local installation, Beans identifier rule, and validation.

@@ -5,7 +5,8 @@
 | Jev result | Model |
 | --- | --- |
 | `simple` | `openai-codex/gpt-6-luna` |
-| `routine` | `openai-codex/gpt-5.6-sol` |
+| `routine_coding` | `openai-codex/gpt-5.6-sol` |
+| `routine_non_coding` | `openai-codex/gpt-6.1-sol` |
 | `very_complex` | `openai-codex/gpt-6-astra` |
 
 ## Routing behavior
@@ -22,15 +23,17 @@ The router normally keeps the selected model during tool continuations. It reass
 
 These thresholds trigger a check, not a forced upgrade. Checks happen before a model request, not during a running tool. New user requests always trigger classification.
 
-The classifier prefers Sol when the required capability is unclear. Ordinary debugging, recurring errors, or user corrections alone do not justify Astra. Astra is for clearly exceptional reasoning needs or persistent failure after meaningfully different approaches. Persistent failure must show that stronger reasoning is needed. Productive long work, external waiting, or missing credentials alone do not justify Astra. Elapsed time is supporting context, not a deadline.
+The classifier prefers a routine level when the required capability is unclear. It uses Sol 5.6 for routine coding and Sol 6.1 for routine non-coding work. Coding includes source code, tests, scripts, software configuration, code review, and debugging. If the coding status is unclear, it uses the coding route. It must not select Sol 6.1 for coding work.
 
-During a continuation, the router changes to Astra only when the classifier selects Astra. Otherwise, it keeps the current model and thinking level, including when classification fails or returns an unusable result. Astra stays selected for the rest of the run. A new user request triggers classification again for any tier.
+Ordinary debugging, recurring errors, or user corrections alone do not justify Astra. Astra is for clearly exceptional reasoning needs or persistent failure after meaningfully different approaches. Persistent failure must show that stronger reasoning is needed. Productive long work, external waiting, or missing credentials alone do not justify Astra. Elapsed time is supporting context, not a deadline.
+
+During a continuation, the router changes to Astra when the classifier selects Astra. It also changes from Sol 6.1 to Sol 5.6 when a reassessment identifies coding work. Otherwise, it keeps the current model and thinking level, including when classification fails or returns an unusable result. Astra stays selected for the rest of the run. A new user request triggers classification again for any tier.
 
 API retries keep the failed model. They do not trigger escalation checks.
 
-For direct requests, the router reuses the previous model. If no previous model exists, it uses Sol. The router preserves Pi's selected thinking level.
+For direct requests, the router reuses the previous model. If no previous model exists, it uses Sol 5.6. The router preserves Pi's selected thinking level.
 
-The classifier uses a five-second provider timeout and no provider retries. For new user requests, Jev failures or unusable results make the router use Sol. Missing Jev access also makes it use Sol. During a continuation, these classifier failures keep the current model and thinking level. If the selected model is unavailable or lacks authentication, the router uses Sol. If Sol is unavailable or lacks authentication, the router reports an error.
+The classifier uses a five-second provider timeout and no provider retries. For new user requests, Jev failures or unusable results make the router use Sol 5.6. Missing Jev access also makes it use Sol 5.6. During a continuation, these classifier failures keep the current model and thinking level. If the selected model is unavailable or lacks authentication, the router uses Sol 5.6. If Sol 5.6 is unavailable or lacks authentication, the router reports an error.
 
 The router preserves caller cancellation. It does not change a canceled request into a Sol request.
 
