@@ -5,7 +5,7 @@
 | Jev result | Model |
 | --- | --- |
 | `simple` | `openai-codex/gpt-6-luna` |
-| `routine` | `openai-codex/gpt-6.1-sol` |
+| `routine` | `openai-codex/gpt-5.6-sol` |
 | `very_complex` | `openai-codex/gpt-6-astra` |
 
 ## Routing behavior

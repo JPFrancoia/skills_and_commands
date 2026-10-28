@@ -9,7 +9,7 @@ import type {
 
 const MODELS = {
   simple: "gpt-6-luna",
-  routine: "gpt-6.1-sol",
+  routine: "gpt-5.6-sol",
   very_complex: "gpt-6-astra",
 } as const;
 
@@ -47,7 +47,7 @@ function routeTo(id: string, request: ModelRouteRequest, ctx: ExtensionContext):
     model = ctx.modelRegistry.find("openai-codex", MODELS.routine);
   }
   if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) {
-    throw new Error("Jev router requires authenticated openai-codex/gpt-6.1-sol access.");
+    throw new Error("Jev router requires authenticated openai-codex/gpt-5.6-sol access.");
   }
   return { model, thinkingLevel: request.thinkingLevel };
 }

@@ -63,7 +63,7 @@ const ctx = {
 
 for (const [level, id] of [
   ["simple", "gpt-6-luna"],
-  ["routine", "gpt-6.1-sol"],
+  ["routine", "gpt-5.6-sol"],
   ["very_complex", "gpt-6-astra"],
 ]) {
   response = choice(level);
@@ -86,12 +86,12 @@ for (const reason of ["continuation", "retry", "direct"] as const) {
 assert.equal(calls.length, count);
 
 const failed = {
-  model: model("gpt-6.1-sol"),
+  model: model("gpt-5.6-sol"),
   thinkingLevel: "low" as const,
   message: { role: "assistant", stopReason: "error" } as NonNullable<ModelRouteRequest["failed"]>["message"],
 };
-assert.equal((await router.route(request({ reason: "retry", previous, failed }), ctx)).model.id, "gpt-6.1-sol");
-assert.equal((await router.route(request({ reason: "direct" }), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request({ reason: "retry", previous, failed }), ctx)).model.id, "gpt-5.6-sol");
+assert.equal((await router.route(request({ reason: "direct" }), ctx)).model.id, "gpt-5.6-sol");
 assert.equal(calls.length, count);
 
 // A successful write must not force a switch to Luna.
@@ -125,34 +125,34 @@ for (const unusable of [
   choice("constructor"),
 ]) {
   response = unusable;
-  assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+  assert.equal((await router.route(request(), ctx)).model.id, "gpt-5.6-sol");
 }
 failure = new Error("Synthetic provider failure");
-assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-5.6-sol");
 failure = undefined;
 response = choice("simple");
 
 const beforeUnavailable = calls.length;
 classifierAvailable = false;
-assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-5.6-sol");
 classifierAvailable = true;
 unauthenticated.add("jev-latest");
-assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-5.6-sol");
 unauthenticated.clear();
-assert.equal((await router.route(request({ messages: [] }), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request({ messages: [] }), ctx)).model.id, "gpt-5.6-sol");
 assert.equal(calls.length, beforeUnavailable);
 
 missing.add("gpt-6-luna");
-assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-5.6-sol");
 missing.clear();
 unauthenticated.add("gpt-6-luna");
-assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-5.6-sol");
 unauthenticated.clear();
 response = choice("routine");
-missing.add("gpt-6.1-sol");
+missing.add("gpt-5.6-sol");
 await assert.rejects(async () => router.route(request(), ctx), /requires authenticated/);
 missing.clear();
-unauthenticated.add("gpt-6.1-sol");
+unauthenticated.add("gpt-5.6-sol");
 await assert.rejects(async () => router.route(request(), ctx), /requires authenticated/);
 unauthenticated.clear();
 
@@ -167,11 +167,11 @@ const stalledMessages: ModelRouteRequest["messages"] = [
 ];
 response = choice("very_complex");
 assert.equal((await router.route(request({
-  reason: "continuation", previous: { model: model("gpt-6.1-sol"), thinkingLevel: "high" }, messages: stalledMessages,
+  reason: "continuation", previous: { model: model("gpt-5.6-sol"), thinkingLevel: "high" }, messages: stalledMessages,
 }), ctx)).model.id, "gpt-6-astra");
 
 assert.equal(calls.at(-1)?.context.state.escalationOnly, true);
-assert.equal(calls.at(-1)?.context.state.currentModel, "gpt-6.1-sol");
+assert.equal(calls.at(-1)?.context.state.currentModel, "gpt-5.6-sol");
 assert.match(calls.at(-1)?.context.state.recentActivity as string, /same test still fails/);
 assert.match(calls.at(-1)?.context.questions.complexity.instructions ?? "", /untrusted evidence/);
 const complexity = calls.at(-1)!.context.questions.complexity;
@@ -182,7 +182,7 @@ assert.match(complexity.criteria?.routine ?? "", /ordinary debugging and correct
 assert.match(complexity.criteria?.very_complex ?? "", /persistent failure after meaningfully different approaches/);
 assert.match(complexity.criteria?.very_complex ?? "", /clearly exceed routine work/);
 
-const sol = { model: model("gpt-6.1-sol"), thinkingLevel: "medium" as const };
+const sol = { model: model("gpt-5.6-sol"), thinkingLevel: "medium" as const };
 response = choice("routine");
 let ongoing = await router.route(request(), ctx);
 const beforePeriodic = calls.length;
@@ -323,7 +323,7 @@ assert.equal(usageRecords.length, 1);
 await router.route(request(), ctx);
 assert.equal(usageRecords.length, 2);
 response = { ...withUsage(), stopReason: "error", answers: {} };
-assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-5.6-sol");
 assert.equal(usageRecords.length, 3);
 response = choice("simple");
 await router.route(request(), ctx);
