@@ -68,6 +68,12 @@ Create files lazily - only when you have something to write. If no `docs/CONTEXT
 
 ## During the session
 
+### Use the question tool
+
+When `ask_user_question` is available, you must use it for every grill question. Never write a grill question as plain text while this tool is available. Ask in plain text only when the tool is unavailable.
+
+Provide two to four concise answer options. Put the recommended answer first and append `(Recommended)` to its label.
+
 ### Ask exactly one question
 
 Ask one and only one question per turn. Do not bundle multiple decisions into one prompt.
