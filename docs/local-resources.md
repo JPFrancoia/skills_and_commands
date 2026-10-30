@@ -28,7 +28,7 @@ Use this repository's path in your settings. Paths can start with `~`. Keep exis
 
 ## Simple language reminder
 
-The `pi-simple-language-reminder` extension adds a hidden reminder before each model request. It asks the model to use ASD-STE100 Simplified Technical English and the terms in `docs/CONTEXT.md` when that file exists. The reminder is request-only and does not add repeated entries to session history.
+The `pi-simple-language-reminder` extension adds a hidden reminder before each model request. It asks the model to use ASD-STE100 Simplified Technical English and the terms in `docs/CONTEXT.md` when that file exists. It also asks the model not to mention these instructions in its next answer. The reminder is request-only and does not add repeated entries to session history.
 
 After updating the extension, reload each open Pi session:
 

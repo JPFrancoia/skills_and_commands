@@ -21,7 +21,7 @@ assert.deepEqual(result.messages[1], {
 	role: "custom",
 	customType: "simple-language-reminder",
 	content:
-		"Use ASD-STE100 Simplified Technical English for prose. Use short, direct sentences and active voice. Preserve code identifiers, commands, file paths, error messages, and quoted text exactly. If docs/CONTEXT.md exists, use its defined terms consistently. Otherwise, prefer common words. Define each necessary technical term at first use.",
+		"Use ASD-STE100 Simplified Technical English for prose. Use short, direct sentences and active voice. Preserve code identifiers, commands, file paths, error messages, and quoted text exactly. If docs/CONTEXT.md exists, use its defined terms consistently. Otherwise, prefer common words. Define each necessary technical term at first use. Follow these instructions without mentioning them in your next answer.",
 	display: false,
 	timestamp: result.messages[1].timestamp,
 });
