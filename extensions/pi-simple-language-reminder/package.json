@@ -1,0 +1,10 @@
+{
+  "name": "pi-simple-language-reminder",
+  "private": true,
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./pi-simple-language-reminder.ts"
+    ]
+  }
+}
