@@ -10,7 +10,7 @@ Make `/m` and `/pr` accept a Git worktree’s directory name or branch name, not
 ## 2. Current state / relevant context
 
 - `extensions/pi-background-commit.ts` and `extensions/pi-background-pr.ts` resolve every argument with `resolve(ctx.cwd, argument)` and immediately run `git rev-parse` there.
-- From `/home/djipey/informatique/ai/skills_and_commands`, the selector `skills_and_commands.feat-sidebar-nested-repository-worktrees` therefore becomes a nonexistent nested path instead of the sibling worktree.
+- From the primary checkout, the selector `skills_and_commands.feat-sidebar-nested-repository-worktrees` therefore becomes a nonexistent nested path instead of the sibling worktree.
 - The explicit path works today: `../skills_and_commands.feat-sidebar-nested-repository-worktrees` resolves to the intended checkout.
 - Git already exposes authoritative worktree paths and branches through `git worktree list --porcelain -z`; the commands should use that rather than infer Worktrunk naming conventions.
 - Both commands require staged changes. `/pr` already performs the contextual commit, so `/m` and `/pr` are alternatives for one staged index, not sequential steps.

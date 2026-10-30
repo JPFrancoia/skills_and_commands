@@ -71,8 +71,8 @@ npm run test:unit -- --test-name-pattern='wrapped core slots'
 
 pi list
 
-git -C /home/djipey/informatique/ai/skills_and_commands status --short
-git -C /home/djipey/informatique/ai/skills_and_commands diff --cached --check
+git status --short
+git diff --cached --check
 ```
 
 Then use a fresh Pi process to run the same background workflow. Verify these results:

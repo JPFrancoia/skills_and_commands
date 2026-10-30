@@ -81,7 +81,7 @@ A real SDK session loaded the same configured package. Its controlled tool retur
 
 Temporary activation evidence is in `/tmp/jev-activation.McZbIF/`. These files contain only synthetic task data.
 
-Documentation and this decision record stay on the original checkout. No push or remote PR occurred. The clean task worktree remains at `/home/djipey/informatique/ai/.worktrees/skills_and_commands/feat-jev-astra-escalation` until a PR is merged.
+Documentation and this decision record stay on the original checkout. No push or remote PR occurred. The clean task worktree remains under the workspace worktree directory until a PR is merged.
 
 New Pi sessions load the updated router. Existing sessions need `/reload`. This running conversation did not reload itself.
 

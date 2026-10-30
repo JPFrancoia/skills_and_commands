@@ -14,7 +14,7 @@ Replace the fixed bundled example with a small personal Pi extension that select
 - All requested models are available through existing Codex authentication.
 - The user approved replacing the example with a personal three-level extension.
 - Existing extensions live in `extensions/` and load through symlinks in `~/.pi/agent/extensions/`.
-- Personal settings link to `/home/djipey/git_all_the_things/pi/agent/settings.json`. Preserve existing changes.
+- Personal settings link to the user's Pi settings file. Preserve existing changes.
 
 ## 3. Proposed implementation
 
@@ -41,7 +41,7 @@ Reference the personal extension through the normal local symlink pattern. Repla
 - `plans/pi-jev-three-level-router-plan.md`: decisions, checks, deviations, and completion record.
 - `docs/pi-jev-router.md`: implemented routing, privacy, installation, and limits after validation.
 - `docs/README.md`: add the implemented extension to the index.
-- `/home/djipey/git_all_the_things/pi/agent/settings.json`: replace only the old extension path; retain router defaults.
+- The user's Pi settings file: replace only the old extension path; retain router defaults.
 - `~/.pi/agent/extensions/pi-jev-router.ts`: new symlink to the repository source.
 - Previous bundled-router plan: retain it as historical context and note its replacement.
 

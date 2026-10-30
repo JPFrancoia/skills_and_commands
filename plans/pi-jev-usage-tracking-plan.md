@@ -15,7 +15,7 @@ Record Jev classifier usage in standard Pi session entries and include those ent
 - TokScale currently counts only assistant messages in Pi-compatible session files.
 - The shared parser also serves OMP, Senpi, Kimchi, and Prime Agent. Prime accounting observes the same emitted sequence.
 - No prior TokScale checkout or installed CLI was found in the inspected home directories.
-- Restored the existing GitHub fork into `/home/djipey/informatique/ai/tokscale`.
+- Restored the existing GitHub fork into a local workspace checkout.
 - TokScale branch: `fix/pi-standalone-usage`, based on current `upstream/main`.
 - The earlier Pi subagent attribution contribution is already merged upstream.
 - Jev's installed catalog price is zero. Do not invent prices or claim that zero displayed cost means free calls.
@@ -113,7 +113,7 @@ Run focused tests first. Run the full Rust workspace checks before publication w
 - The installed report matches the verification session exactly: three calls, 1,302 input tokens, and 123 output tokens.
 - Today's report later shows six real classifier calls and 2,856 tokens, including ongoing sessions.
 - TokScale's existing price resolver already estimates Jev input at $0.042 per million tokens. No price configuration was changed.
-- Screenshots: `/home/djipey/Desktop/tokscale-pi-usage-2026-10-16.png` and `/home/djipey/Desktop/tokscale-pi-jev-details-2026-10-16.png`.
+- Screenshots: local desktop captures for the Pi usage and Jev details views.
 - Screenshots capture only the dedicated TokScale terminal window. No prompts, credentials, or unrelated windows are included.
 - A first terminal-window lookup timed out because TokScale changed the title. Capturing by the dedicated Xterm process ID resolved this without changing application code.
 - The daily-total smoke assertion initially saw more calls than the isolated test. Verification now compares the exact test session, preserving additional real usage.

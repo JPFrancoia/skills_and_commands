@@ -110,7 +110,7 @@ REPOS=https://github.com/acme/widgets,https://gitlab.example.com/acme/group/gadg
   pi --tui-mode fullscreen -e /path/to/extensions/pi-sidebar
 ```
 
-Each repository shows its total in parentheses directly after its name, like `Essorix/green_slope_core (1)`. The count uses a bold, muted badge without right alignment. The next row splits that total into drafts and two CI groups. Hostnames do not appear.
+Each repository shows its total in parentheses directly after its name, like `acme/widgets (1)`. The count uses a bold, muted badge without right alignment. The next row splits that total into drafts and two CI groups. Hostnames do not appear.
 
 ```text
 acme/widgets (4)
@@ -175,6 +175,6 @@ If the sidebar disappears after an upgrade:
    node "$host/node_modules/jiti/lib/jiti-cli.mjs" extensions/pi-sidebar/pi-sidebar.test.ts
    ```
 
-4. launch the fullscreen trial from source with `pi --tui-mode fullscreen -e /home/djipey/informatique/ai/skills_and_commands/extensions/pi-sidebar`.
+4. launch the fullscreen trial from the repository root with `pi --tui-mode fullscreen -e "$PWD/extensions/pi-sidebar"`.
 
 The compositor skips painting while Pi's TUI is stopped for an external editor and restores the terminal cursor during disposal. Fullscreen mode may avoid scrollback issues, but raw painting outside Pi's screen model and private TUI hooks remain unsupported.

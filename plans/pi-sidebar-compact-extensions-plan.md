@@ -56,5 +56,5 @@ The request approves this bounded layout change. Short statuses share one row in
 
 ## Spacing follow-up
 
-The user requested less space below quota after reviewing `/home/djipey/Desktop/screen-2026-10-25-12-24-00.png`. Removed the blank row before extension indicators. Regression checks require indicators immediately after the quota bar or token details. The adjacency test failed before the fix and passed afterward. Inspected updated dark and light terminal screenshots at `/tmp/pi-sidebar-compact-extensions-proof/spacing-{dark,light}.png`. Documentation now describes immediate placement. This follow-up did not repeat the isolated Pi reload and resize checks.
+The user requested less space below quota after reviewing a local terminal screenshot. Removed the blank row before extension indicators. Regression checks require indicators immediately after the quota bar or token details. The adjacency test failed before the fix and passed afterward. Inspected updated dark and light terminal screenshots at `/tmp/pi-sidebar-compact-extensions-proof/spacing-{dark,light}.png`. Documentation now describes immediate placement. This follow-up did not repeat the isolated Pi reload and resize checks.
 

@@ -9,7 +9,7 @@ Build a small Pi extension that copies every fenced assistant code block. The pi
 
 ## 2. Current state / relevant context
 
-- Target directory: `/home/djipey/informatique/ai/skills_and_commands/extensions`.
+- Target directory: `extensions/` in this repository.
 - Existing local extension style: single-file TypeScript (`extensions/pi-sqz-auto.ts`) with comments explaining symlink/install usage.
 - Pi supports:
   - `pi.registerShortcut()` for commandless keyboard triggers.
@@ -72,7 +72,7 @@ UI:
 
 - Add a tiny self-test block in the extension gated behind a local helper? Prefer a separate `node`/`tsx` test only if the repo already has TypeScript tooling; it does not.
 - Practical validation:
-  - Run `pi -e /home/djipey/informatique/ai/skills_and_commands/extensions/pi-bash-command-picker.ts`.
+  - Run `pi -e "$PWD/extensions/pi-bash-command-picker.ts"` from the repository root.
   - Ask Pi to output a `bash` block containing simple commands, continuations, and a heredoc.
   - Press the shortcut and verify the picker lists individual commands.
   - Copy one command and paste into another terminal/editor to verify raw text.

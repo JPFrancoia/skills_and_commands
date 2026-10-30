@@ -223,7 +223,7 @@ Installation/landing:
 
 - Commit the task branch with a contextual commit after checks pass.
 - Merge it into `master` through Worktrunk so the stable primary-checkout file exists without editing the primary checkout directly.
-- Run `pi install /home/djipey/informatique/ai/skills_and_commands/extensions/pi-sidebar.ts`.
+- Run `pi install "$PWD/extensions/pi-sidebar.ts"` from the repository root.
 - Verify the installed settings entry and `pi list`; do not claim activation until a fresh/reloaded Pi session visibly renders it.
 
 ## 7. Step-by-step execution checklist
@@ -285,7 +285,7 @@ Landing and activation:
 - contextual feature commit: `6b2cde9 feat(pi): add custom sidebar extension`;
 - merged to `master` through Worktrunk;
 - installed settings source: `../../informatique/ai/skills_and_commands/extensions/pi-sidebar.ts`;
-- stable resolved path: `/home/djipey/informatique/ai/skills_and_commands/extensions/pi-sidebar.ts`.
+- stable resolved path: `extensions/pi-sidebar.ts` in this repository.
 
 Not automated: opening a real external editor. The compositor's `tui.stopped` guard and install/dispose restoration are covered by code review and the fake-TUI test.
 

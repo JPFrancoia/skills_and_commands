@@ -26,6 +26,16 @@ The package manifest declares the extension entry point. Pi settings can load th
 
 Use this repository's path in your settings. Paths can start with `~`. Keep existing package entries and their resource filters.
 
+## Simple language reminder
+
+The `pi-simple-language-reminder` extension adds a hidden reminder before each model request. It asks the model to use ASD-STE100 Simplified Technical English and the terms in `docs/CONTEXT.md` when that file exists. The reminder is request-only and does not add repeated entries to session history.
+
+After updating the extension, reload each open Pi session:
+
+```text
+/reload
+```
+
 ## Message timestamps
 
 The `pi-message-timestamps` extension keeps timestamps for user messages. Assistant timestamps follow visible rendered content, with a blank line above and below each timestamp. Hidden activity has no timestamp. Old orphan assistant timestamp entries stay in session history, but the extension hides them. The extension does not depend on minimalist settings.

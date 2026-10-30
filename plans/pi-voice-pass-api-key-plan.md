@@ -62,12 +62,6 @@ When the field is absent, preserve the current ADC behavior. Read `pass` for eac
 - [x] Run focused and repository validation.
 - [x] Record completion and any deviations.
 
-## Open questions / assumptions
-
-- Assume the requested secret is a Google Cloud API key for Gemini 3.5 Transcribe.
-- Assume the field name `apiKeyPassPath` is acceptable and the entry contains the key on its first line.
-- The user will provide the actual password-store path before live configuration is updated.
-
 ## Completion notes
 
-Implemented the proposed `apiKeyPassPath` flow without deviations. The extension invokes `pass` directly, uses only the first output line, and keeps ADC as the fallback. Focused tests, `git diff --check`, and `pre-commit run --all-files` passed. Live transcription was not tested because the password-store path was not provided.
+Implemented the proposed `apiKeyPassPath` flow without deviations. A dedicated key was provisioned, stored in `pass`, and equality-verified against its infrastructure output. The live Pi configuration uses a pass entry and shortcut `ctrl+space`. The extension invokes `pass` directly, uses only the first output line, and keeps ADC as the fallback. Focused tests, `git diff --check`, and `pre-commit run --all-files` passed. Live transcription remains untested.

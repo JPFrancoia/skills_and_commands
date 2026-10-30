@@ -6,7 +6,7 @@ BTW inherits `jev/auto` without the runtime that owns its router. Its child sess
 
 ## Current state / relevant context
 
-- Source: `/home/djipey/informatique/ai/pi-btw`, branch `fix/virtual-model-routing`, based on installed version `v0.8.0`.
+- Source: a local `pi-btw` checkout, branch `fix/virtual-model-routing`, based on installed version `v0.8.0`.
 - `createBtwModelRuntimeOptions()` copies physical provider registrations and temporary keys into a new runtime.
 - Virtual models need their registered route, physical providers, and authentication together.
 - The SDK accepts an existing `ModelRuntime`, but `ExtensionContext` exposes only its registry.
@@ -25,7 +25,7 @@ Use a local checkout rather than editing the npm installation. Replace only the 
 - `tests/btw.runtime.test.ts`: cover inherited selections, overrides, summaries, and a missing runtime accessor.
 - `tests/btw.sdk.test.ts`: exercise routing with the real SDK and a local fake provider.
 - Existing package documentation: explain inherited virtual models and the compatibility limit.
-- `/home/djipey/.pi/agent/settings.json`: select the tested local package without duplicate loading.
+- `~/.pi/agent/settings.json`: select the tested local package without duplicate loading.
 
 ## Risks and edge cases
 
