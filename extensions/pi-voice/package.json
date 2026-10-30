@@ -1,0 +1,22 @@
+{
+  "name": "pi-voice",
+  "private": true,
+  "type": "module",
+  "description": "Voice dictation for Pi with Gemini 3.5 Transcribe on Vertex AI",
+  "scripts": {
+    "test": "node --test pi-voice.test.ts"
+  },
+  "pi": {
+    "extensions": [
+      "./pi-voice.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "dependencies": {
+    "@handy-computer/recorder": "0.1.0",
+    "google-auth-library": "^9.0.0"
+  }
+}
