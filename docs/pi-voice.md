@@ -20,7 +20,8 @@ The recording meter and key layout come from [`@earendil-works/pi-voice`](https:
 ## Requirements
 
 - A Google Cloud project with the Vertex AI API enabled.
-- Application Default Credentials. Run `gcloud auth application-default login` once.
+- Application Default Credentials (ADC), or a service-account-bound Google Cloud API key stored in `pass`.
+- Run `gcloud auth application-default login` once to use ADC.
 - Microphone access for your terminal app. On macOS, check System Settings → Privacy & Security → Microphone.
 
 ## Install
@@ -48,6 +49,7 @@ Settings live in `~/.pi/agent/pi-voice.json`. Every field is optional.
 ```json
 {
   "project": "my-project",
+  "apiKeyPassPath": "gcp/pi-voice",
   "location": "global",
   "languageCodes": ["en-GB"],
   "mode": "SMART",
@@ -59,6 +61,7 @@ Settings live in `~/.pi/agent/pi-voice.json`. Every field is optional.
 | Field | Default | Meaning |
 |---|---|---|
 | `project` | `GOOGLE_CLOUD_PROJECT` | Google Cloud project that pays for the requests. |
+| `apiKeyPassPath` | none | Optional `pass` entry path for a standard Google Cloud API key bound to a service account. When set, Pi runs `pass show <path>` and uses the first line as the key. Otherwise, Pi uses ADC. |
 | `location` | `global` | Vertex location: `global`, `us`, or `eu`. Use `eu` or `us` to keep processing in that region. |
 | `languageCodes` | automatic | BCP-47 codes. A language code makes the custom vocabulary more reliable. |
 | `mode` | `SMART` | `SMART` removes filler words and applies spoken corrections. `VERBATIM` keeps every word. |
@@ -66,6 +69,8 @@ Settings live in `~/.pi/agent/pi-voice.json`. Every field is optional.
 | `shortcut` | `ctrl+space` | Pi key id for the shortcut. Restart Pi after you change it. |
 
 Pi reads the file each time you start a recording. Changes to everything except `shortcut` apply at once.
+
+Gemini 3.5 Transcribe requires a standard Google Cloud API key bound to a service account. An express-mode API key does not work. You can use `apiKeyPassPath` for this key, or use ADC instead.
 
 ## Limits
 

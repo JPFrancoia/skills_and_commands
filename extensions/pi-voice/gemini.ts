@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,8 @@ const MODEL = "gemini-3.5-transcribe";
 export type VoiceConfig = {
   /** Google Cloud project. Defaults to GOOGLE_CLOUD_PROJECT. */
   project?: string;
+  /** Optional pass entry containing a service-account-bound Google Cloud API key. */
+  apiKeyPassPath?: string;
   /** Vertex location for the model: "global", "us" or "eu". */
   location: string;
   /** BCP-47 codes, such as ["en-GB"]. Empty means automatic detection. */
@@ -83,6 +86,7 @@ export function transcriptFrom(response: GenerateResponse): string {
 }
 
 type AuthClient = { getRequestHeaders(): Promise<Record<string, string> | Headers> };
+type CommandRunner = (file: string, args: string[], signal?: AbortSignal) => Promise<string>;
 let authClient: Promise<AuthClient> | undefined;
 
 /** Application Default Credentials, loaded once and refreshed by the library. */
@@ -94,12 +98,34 @@ export function prepareAuth(): Promise<AuthClient> {
   return authClient;
 }
 
+const runCommand: CommandRunner = (file, args, signal) => new Promise((resolve, reject) => {
+  execFile(file, args, { encoding: "utf8", signal }, (error, stdout) => {
+    if (error) reject(error);
+    else resolve(stdout);
+  });
+});
+
+/** Read the secret from the first line of a pass entry. */
+export async function readApiKey(passPath: string, signal?: AbortSignal, run: CommandRunner = runCommand): Promise<string> {
+  let output: string;
+  try {
+    output = await run("pass", ["show", passPath], signal);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new Error(`Cannot read Google API key from pass entry "${passPath}": ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const key = output.split(/\r?\n/, 1)[0]?.trim();
+  if (!key) throw new Error(`Pass entry "${passPath}" has an empty first line.`);
+  return key;
+}
+
 export async function transcribe(samples: Float32Array, config: VoiceConfig, signal: AbortSignal): Promise<string> {
   if (!config.project) {
     throw new Error(`No Google Cloud project. Set GOOGLE_CLOUD_PROJECT or "project" in ${CONFIG_PATH}.`);
   }
-  const client = await prepareAuth();
-  const headers = new Headers(await client.getRequestHeaders());
+  const headers = config.apiKeyPassPath
+    ? new Headers({ "x-goog-api-key": await readApiKey(config.apiKeyPassPath, signal) })
+    : new Headers(await (await prepareAuth()).getRequestHeaders());
   headers.set("Content-Type", "application/json");
   const audioTranscriptionConfig: Record<string, unknown> = { mode: config.mode };
   if (config.languageCodes.length) audioTranscriptionConfig.languageCodes = config.languageCodes;

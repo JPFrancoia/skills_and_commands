@@ -56,7 +56,7 @@ export default function piVoice(pi: ExtensionAPI): void {
     showStatus(ctx, "Starting microphone…");
     try {
       const config = readConfig();
-      void prepareAuth().catch(() => undefined); // Overlap credential loading with the recording.
+      if (!config.apiKeyPassPath) void prepareAuth().catch(() => undefined); // Overlap ADC loading with the recording.
       const { permissionStatus, Recorder } = await import("@handy-computer/recorder");
       if (process.platform === "darwin" && permissionStatus() === "denied") {
         throw new Error("Microphone access is denied. Allow your terminal in System Settings → Privacy & Security → Microphone.");

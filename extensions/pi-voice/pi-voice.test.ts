@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { encodeWav, endpoint, readConfig, transcriptFrom } from "./gemini.ts";
+import { encodeWav, endpoint, readApiKey, readConfig, transcriptFrom } from "./gemini.ts";
 
 test("encodeWav writes a 16 kHz mono 16-bit header and clamps samples", () => {
   const wav = encodeWav(new Float32Array([0, 1, -1, 2]));
@@ -22,12 +22,32 @@ test("endpoint uses the global host or a regional rep host", () => {
 
 test("readConfig merges the file over defaults", () => {
   const path = join(mkdtempSync(join(tmpdir(), "pi-voice-")), "c.json");
-  writeFileSync(path, JSON.stringify({ location: "eu", customVocabulary: ["Kubernetes"] }));
+  writeFileSync(path, JSON.stringify({ location: "eu", apiKeyPassPath: "gcp/pi-voice", customVocabulary: ["Kubernetes"] }));
   const config = readConfig(path);
   assert.equal(config.location, "eu");
+  assert.equal(config.apiKeyPassPath, "gcp/pi-voice");
   assert.equal(config.mode, "SMART");
   assert.equal(config.shortcut, "ctrl+space");
   assert.deepEqual(config.customVocabulary, ["Kubernetes"]);
+});
+
+test("readApiKey reads the first line through pass without a shell", async () => {
+  let invocation: { file: string; args: string[] } | undefined;
+  const key = await readApiKey("gcp/pi-voice", undefined, async (file, args) => {
+    invocation = { file, args };
+    return "secret-key\naccount: voice";
+  });
+  assert.deepEqual(invocation, { file: "pass", args: ["show", "gcp/pi-voice"] });
+  assert.equal(key, "secret-key");
+
+  await assert.rejects(
+    readApiKey("gcp/empty", undefined, async () => "\nnotes"),
+    /empty first line/,
+  );
+  await assert.rejects(
+    readApiKey("gcp/missing", undefined, async () => { throw new Error("entry missing"); }),
+    /Cannot read Google API key from pass entry "gcp\/missing": entry missing/,
+  );
 });
 
 test("transcriptFrom joins parts and handles empty responses", () => {
