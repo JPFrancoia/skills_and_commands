@@ -119,6 +119,15 @@ def test_memory_extraction() -> None:
 
 def test_database_save_and_query() -> None:
     embedding = [1.0] + [0.0] * 767
+    unrelated_embedding = [0.0, 1.0] + [0.0] * 766
+    missing_embedding = [0.0, 0.0, 1.0] + [0.0] * 765
+    transcript = (
+        "USER: Check the parser\n"
+        "ASSISTANT: The parser rejects the café input with error E417.\n"
+        "USER: Discuss release notes\n"
+        "ASSISTANT: This passage is not related to the parser error."
+    )
+
     with tempfile.TemporaryDirectory() as directory:
         db_path = str(Path(directory) / "memories.db")
         with sqlite3.connect(db_path) as conn:
@@ -150,7 +159,7 @@ def test_database_save_and_query() -> None:
         conn = save.get_connection(db_path)
         conn.execute(
             "INSERT INTO memories_vec (id, embedding) VALUES (?, ?)",
-            ("legacy", json.dumps(embedding)),
+            ("legacy", json.dumps(unrelated_embedding)),
         )
         conn.commit()
         conn.close()
@@ -159,9 +168,9 @@ def test_database_save_and_query() -> None:
         with patch.object(save, "get_embedding", return_value=embedding) as embed:
             with contextlib.redirect_stdout(io.StringIO()):
                 save.save_memory(
-                    db_path, "memory", "Parser", "Checked parser",
-                    "Original conversation", "parser", "/project",
-                    reflections=[REFLECTION], observations=observations,
+                    db_path, "memory", "Parser", "Checked parser", transcript,
+                    "parser", "/project", reflections=[REFLECTION],
+                    observations=observations,
                 )
             embedded_text = embed.call_args.args[0]
             assert REFLECTION["content"] in embedded_text
@@ -173,16 +182,48 @@ def test_database_save_and_query() -> None:
             assert json.loads(row[0]) == [REFLECTION]
             assert json.loads(row[1]) == observations
 
-            for full in (False, True):
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output):
-                    save.query_memories(db_path, "parser", show_full=full)
-                text = output.getvalue()
-                assert "## Reflections:" in text and "## Observations:" in text
-                assert REFLECTION["content"] in text and OBSERVATION["content"] in text
-                assert OBSERVATION["id"] in text and "sourceEntryIds" in text
-                assert ("Original conversation" in text) is full
-                assert "Existing memory" in text and "Found 2 results" in text
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                save.query_memories(db_path, "parser")
+            text = output.getvalue()
+            assert "Parser" in text and "Found 1 relevant results" in text
+            assert "Existing memory" not in text
+            assert "## Reflections:" not in text and "## Observations:" not in text
+            assert transcript not in text
+
+            with (
+                patch.object(save, "get_embedding", return_value=missing_embedding),
+                contextlib.redirect_stdout(output := io.StringIO()),
+            ):
+                save.query_memories(db_path, "unrelated words")
+            assert "No relevant memories found." in output.getvalue()
+
+            with contextlib.redirect_stdout(output := io.StringIO()):
+                assert save.show_memory_summary(db_path, "memory")
+            text = output.getvalue()
+            assert "Checked parser" in text
+            assert transcript not in text and REFLECTION["content"] not in text
+
+            with contextlib.redirect_stdout(output := io.StringIO()):
+                assert save.find_transcript_passages(db_path, "memory", "café E417")
+            text = output.getvalue()
+            assert "The parser rejects the café input with error E417." in text
+            assert "Discuss release notes" not in text
+            assert "Found 1 matching passages" in text
+
+            with contextlib.redirect_stdout(output := io.StringIO()):
+                assert save.find_transcript_passages(db_path, "memory", "missing term")
+            assert "No matching transcript passages found." in output.getvalue()
+
+            long_passage = f"ASSISTANT: {'before ' * 250}café E417 {'after ' * 250}"
+            excerpt = save.excerpt_passage(long_passage, "café E417", {"café", "e417"})
+            assert len(excerpt) <= save.PASSAGE_MAX_CHARS
+            assert "café E417" in excerpt
+
+            error = io.StringIO()
+            with contextlib.redirect_stderr(error):
+                assert not save.show_memory_summary(db_path, "missing")
+            assert "Error: Memory not found: missing" in error.getvalue()
 
             with contextlib.redirect_stdout(io.StringIO()):
                 save.save_memory(

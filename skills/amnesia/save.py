@@ -12,7 +12,9 @@ Save and query conversation memories with semantic search.
 
 Commands:
     save.py save --id SESSION_ID --title "Title" [--tags "a,b"] [--summary-file FILE]
-    save.py query "search terms" [--limit N] [--full]
+    save.py query "search terms" [--limit N]
+    save.py summary MEMORY_ID
+    save.py passages MEMORY_ID "search terms" [--limit N]
     save.py init
 """
 
@@ -21,7 +23,9 @@ import contextlib
 import io
 import json
 import logging
+import math
 import os
+import re
 import sqlite3
 import sys
 import warnings
@@ -31,6 +35,11 @@ from pathlib import Path
 _model = None
 
 SUM_COMMAND_MARKERS = ("<amnesia_sum_command>", "</amnesia_sum_command>")
+MIN_RELEVANCE_SCORE = 35.0
+PASSAGE_LIMIT = 3
+PASSAGE_MAX_CHARS = 1200
+TRANSCRIPT_ROLE_PATTERN = re.compile(r"(?m)^(?=(?:USER|ASSISTANT|SUMMARY): )")
+WORD_PATTERN = re.compile(r"\w+")
 
 
 def get_pi_session_root() -> Path:
@@ -393,26 +402,21 @@ def save_memory(
     print(f"Memory saved: {memory_id}")
 
 
-def query_memories(db_path: str, query: str, limit: int = 5, show_full: bool = False):
-    """Search memories using vector similarity."""
-    import math
-
+def query_memories(db_path: str, query: str, limit: int = 5):
+    """Search memory titles and summaries with a minimum relevance score."""
     query_embedding = get_embedding(query)
     conn = get_connection(db_path)
 
     results = conn.execute(
         """
-        SELECT 
+        SELECT
             v.id,
             v.distance,
             m.title,
             m.content,
-            m.full_content,
             m.tags,
             m.created_at,
-            m.session_directory,
-            m.reflections,
-            m.observations
+            m.session_directory
         FROM memories_vec v
         JOIN memories m ON v.id = m.id
         WHERE v.embedding MATCH ? AND k = ?
@@ -423,37 +427,137 @@ def query_memories(db_path: str, query: str, limit: int = 5, show_full: bool = F
 
     conn.close()
 
+    accepted = []
+    for row in results:
+        score = math.exp(-row[1]) * 100
+        if score >= MIN_RELEVANCE_SCORE:
+            accepted.append((row, score))
+
     print(f"Semantic search for: {query}\n")
+    if not accepted:
+        print("No relevant memories found.")
+        return
 
-    for i, (
-        id, distance, title, content, full_content, tags, created_at,
-        session_directory, reflections, observations,
-    ) in enumerate(results, 1):
-        similarity = math.exp(-distance) * 100
+    for i, (row, score) in enumerate(accepted, 1):
+        memory_id, _distance, title, content, tags, created_at, directory = row
+        preview = content[:200] + "..." if len(content) > 200 else content
 
-        print(f"--- Result {i} (score: {similarity:.1f}) ---")
-        print(f"ID: {id}")
+        print(f"--- Result {i} (score: {score:.1f}) ---")
+        print(f"ID: {memory_id}")
         print(f"Title: {title}")
         print(f"Tags: {tags or '(none)'}")
         print(f"Date: {created_at}")
-        print(f"Directory: {session_directory or '(unknown)'}")
+        print(f"Directory: {directory or '(unknown)'}")
+        print(f"Preview: {preview}\n")
 
-        if show_full and full_content:
-            print(f"\n## Summary:\n{content}")
-            print(f"\n## Full Conversation:\n{full_content}")
-        else:
-            preview = content[:200] + "..." if len(content) > 200 else content
-            print(f"Preview: {preview}")
-        for label, stored in (
-            ("Reflections", reflections), ("Observations", observations),
-        ):
-            records = json.loads(stored or "[]")
-            if records:
-                rendered = json.dumps(records, ensure_ascii=False, indent=2)
-                print(f"\n## {label}:\n{rendered}")
+    print(f"Found {len(accepted)} relevant results")
+
+
+def show_memory_summary(db_path: str, memory_id: str) -> bool:
+    """Show the stored summary for one exact memory ID."""
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT title, content FROM memories WHERE id = ?", (memory_id,)
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        print(f"Error: Memory not found: {memory_id}", file=sys.stderr)
+        return False
+
+    title, content = row
+    print(f"ID: {memory_id}")
+    print(f"Title: {title}")
+    print(f"\n## Summary:\n{content}")
+    return True
+
+
+def split_transcript(full_content: str) -> list[str]:
+    """Split an exported transcript into role-based passages."""
+    starts = [match.start() for match in TRANSCRIPT_ROLE_PATTERN.finditer(full_content)]
+    if not starts:
+        return [full_content.strip()] if full_content.strip() else []
+
+    passages = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(full_content)
+        passage = full_content[start:end].strip()
+        if passage:
+            passages.append(passage)
+    return passages
+
+
+def excerpt_passage(passage: str, search: str, terms: set[str]) -> str:
+    """Keep a transcript passage near its first matching term."""
+    if len(passage) <= PASSAGE_MAX_CHARS:
+        return passage
+
+    normalized = passage.casefold()
+    phrase_position = normalized.find(search.casefold())
+    positions = [normalized.find(term) for term in terms]
+    positions = [position for position in positions if position >= 0]
+    hit = phrase_position if phrase_position >= 0 else min(positions, default=0)
+
+    body_limit = PASSAGE_MAX_CHARS - 6
+    start = max(0, hit - body_limit // 3)
+    end = min(len(passage), start + body_limit)
+    if end == len(passage):
+        start = max(0, end - body_limit)
+
+    prefix = "..." if start else ""
+    suffix = "..." if end < len(passage) else ""
+    return f"{prefix}{passage[start:end].strip()}{suffix}"
+
+
+def find_transcript_passages(
+    db_path: str, memory_id: str, search: str, limit: int = PASSAGE_LIMIT
+) -> bool:
+    """Show bounded transcript passages that match search terms."""
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT title, full_content FROM memories WHERE id = ?", (memory_id,)
+    ).fetchone()
+    conn.close()
+
+    if not row:
+        print(f"Error: Memory not found: {memory_id}", file=sys.stderr)
+        return False
+
+    title, full_content = row
+    if not full_content:
+        print(f"Error: Memory has no saved transcript: {memory_id}", file=sys.stderr)
+        return False
+
+    terms = set(WORD_PATTERN.findall(search.casefold()))
+    if not terms:
+        print("Error: Passage search needs at least one word", file=sys.stderr)
+        return False
+
+    matches = []
+    phrase = search.casefold()
+    for source_index, passage in enumerate(split_transcript(full_content), 1):
+        words = set(WORD_PATTERN.findall(passage.casefold()))
+        overlap = len(terms & words)
+        if overlap:
+            matches.append((phrase in passage.casefold(), overlap, source_index, passage))
+
+    matches.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    matches = matches[:limit]
+
+    print(f"ID: {memory_id}")
+    print(f"Title: {title}")
+    print(f"Search: {search}\n")
+    if not matches:
+        print("No matching transcript passages found.")
+        return True
+
+    for result_index, (_exact, _overlap, source_index, passage) in enumerate(matches, 1):
+        print(f"--- Passage {result_index} (transcript section {source_index}) ---")
+        print(excerpt_passage(passage, search, terms))
         print()
 
-    print(f"Found {len(results)} results")
+    print(f"Found {len(matches)} matching passages")
+    return True
 
 
 def main():
@@ -483,10 +587,20 @@ def main():
         "--limit", "-n", type=int, default=5, help="Number of results"
     )
     query_parser.add_argument(
-        "--full", "-f", action="store_true", help="Show full content"
-    )
-    query_parser.add_argument(
         "--init", action="store_true", help="Initialize database if needed"
+    )
+
+    summary_parser = subparsers.add_parser("summary", help="Show one memory summary")
+    summary_parser.add_argument("id", help="Exact memory ID")
+
+    passages_parser = subparsers.add_parser(
+        "passages", help="Find passages in one saved transcript"
+    )
+    passages_parser.add_argument("id", help="Exact memory ID")
+    passages_parser.add_argument("search", help="Words to find in the transcript")
+    passages_parser.add_argument(
+        "--limit", "-n", type=int, default=PASSAGE_LIMIT,
+        help="Number of passages",
     )
 
     # init command
@@ -549,17 +663,29 @@ def main():
             session_directory, reflections=reflections, observations=observations,
         )
 
-    elif args.command == "query":
+    elif args.command in {"query", "summary", "passages"}:
         if not os.path.exists(db_path):
-            if args.init:
+            if args.command == "query" and args.init:
                 init_db(db_path)
                 print("No memories saved yet.\n")
                 return
-            else:
-                print(f"Error: Database not found: {db_path}", file=sys.stderr)
-                sys.exit(1)
+            print(f"Error: Database not found: {db_path}", file=sys.stderr)
+            sys.exit(1)
 
-        query_memories(db_path, args.search, args.limit, args.full)
+        if args.command == "query":
+            if args.limit < 1:
+                print("Error: Result limit must be at least 1", file=sys.stderr)
+                sys.exit(1)
+            query_memories(db_path, args.search, args.limit)
+        elif args.command == "summary":
+            if not show_memory_summary(db_path, args.id):
+                sys.exit(1)
+        else:
+            if args.limit < 1:
+                print("Error: Passage limit must be at least 1", file=sys.stderr)
+                sys.exit(1)
+            if not find_transcript_passages(db_path, args.id, args.search, args.limit):
+                sys.exit(1)
 
     else:
         parser.print_help()
