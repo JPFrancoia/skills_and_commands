@@ -1,5 +1,5 @@
-import type { RiskSeverity } from "../../utils/quotas-severity.js";
-import { getSeverityColor } from "../../utils/quotas-severity.js";
+import type { RiskSeverity } from "./utils/quotas-severity.js";
+import { getSeverityColor } from "./utils/quotas-severity.js";
 
 export type WindowStatus = {
   label: string;

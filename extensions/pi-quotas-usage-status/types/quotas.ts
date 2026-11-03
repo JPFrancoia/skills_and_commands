@@ -1,3 +1,8 @@
+export interface QuotaAuthStorage {
+  get(provider: string): unknown;
+  getApiKey(provider: string): Promise<string | undefined>;
+}
+
 export type SupportedQuotaProvider =
   | "anthropic"
   | "openai-codex"

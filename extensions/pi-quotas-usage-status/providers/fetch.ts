@@ -2,8 +2,12 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AuthStorage } from "@mariozechner/pi-coding-agent";
-import type { QuotasErrorKind, QuotasResult, SupportedQuotaProvider } from "../types/quotas.js";
+import type {
+  QuotaAuthStorage,
+  QuotasErrorKind,
+  QuotasResult,
+  SupportedQuotaProvider,
+} from "../types/quotas.js";
 import {
   parseAnthropicUsage,
   parseCodexUsage,
@@ -31,7 +35,7 @@ function isTimeoutReason(reason: unknown): boolean {
 }
 
 async function providerAccessToken(
-  authStorage: AuthStorage,
+  authStorage: QuotaAuthStorage,
   provider: string,
 ): Promise<string | undefined> {
   return authStorage.getApiKey(provider);
@@ -45,7 +49,7 @@ function isDirectAnthropicApiKey(token: string): boolean {
   return token.startsWith("sk-ant-api");
 }
 
-function codexAccountId(authStorage: AuthStorage): string | undefined {
+function codexAccountId(authStorage: QuotaAuthStorage): string | undefined {
   const credential = authStorage.get("openai-codex") as any;
   if (typeof credential?.accountId === "string") return credential.accountId;
   try {
@@ -240,7 +244,7 @@ async function tryGitHubUserEndpoint(
   );
 }
 
-function githubOAuthToken(authStorage: AuthStorage): string | undefined {
+function githubOAuthToken(authStorage: QuotaAuthStorage): string | undefined {
   // Pi's GitHub Copilot OAuth credential stores the GitHub OAuth token in
   // `refresh`; `access` is a Copilot proxy token (tid=...;proxy-ep=...) that
   // is valid for model calls but rejected by api.github.com quota endpoints.
@@ -319,7 +323,7 @@ export async function fetchGitHubCopilotQuotasWithToken(
 }
 
 export async function fetchAnthropicQuotas(
-  authStorage: AuthStorage,
+  authStorage: QuotaAuthStorage,
   signal?: AbortSignal,
 ): Promise<QuotasResult> {
   return fetchAnthropicQuotasWithToken(
@@ -329,7 +333,7 @@ export async function fetchAnthropicQuotas(
 }
 
 export async function fetchCodexQuotas(
-  authStorage: AuthStorage,
+  authStorage: QuotaAuthStorage,
   signal?: AbortSignal,
 ): Promise<QuotasResult> {
   return fetchCodexQuotasWithToken(
@@ -340,7 +344,7 @@ export async function fetchCodexQuotas(
 }
 
 export async function fetchGitHubCopilotQuotas(
-  authStorage: AuthStorage,
+  authStorage: QuotaAuthStorage,
   signal?: AbortSignal,
 ): Promise<QuotasResult> {
   const oauthResult = await fetchGitHubCopilotQuotasWithGitHubToken(
@@ -381,7 +385,7 @@ export async function fetchOpenRouterQuotasWithToken(
 }
 
 export async function fetchOpenRouterQuotas(
-  authStorage: AuthStorage,
+  authStorage: QuotaAuthStorage,
   signal?: AbortSignal,
 ): Promise<QuotasResult> {
   return fetchOpenRouterQuotasWithToken(
@@ -391,7 +395,7 @@ export async function fetchOpenRouterQuotas(
 }
 
 export async function fetchSyntheticQuotas(
-  authStorage: AuthStorage,
+  authStorage: QuotaAuthStorage,
   signal?: AbortSignal,
 ): Promise<QuotasResult> {
   // Prefer the key stored via `pi /login` (auth.json); fall back to the
@@ -417,7 +421,7 @@ export async function fetchSyntheticQuotas(
 }
 
 export async function fetchOpenCodeGoQuotas(
-  _authStorage: AuthStorage,
+  _authStorage: QuotaAuthStorage,
   signal?: AbortSignal,
 ): Promise<QuotasResult> {
   const configResult = await resolveOpenCodeGoConfigCached();
@@ -469,7 +473,7 @@ export async function fetchKimiCodingQuotasWithToken(
 }
 
 export async function fetchKimiCodingQuotas(
-  authStorage: AuthStorage,
+  authStorage: QuotaAuthStorage,
   signal?: AbortSignal,
 ): Promise<QuotasResult> {
   return fetchKimiCodingQuotasWithToken(
@@ -498,7 +502,7 @@ export async function fetchZaiQuotasWithToken(
 }
 
 export async function fetchZaiQuotas(
-  authStorage: AuthStorage,
+  authStorage: QuotaAuthStorage,
   signal?: AbortSignal,
 ): Promise<QuotasResult> {
   return fetchZaiQuotasWithToken(await providerAccessToken(authStorage, "zai"), signal);
@@ -524,7 +528,7 @@ export async function fetchOllamaCloudQuotasWithToken(
 }
 
 export async function fetchOllamaCloudQuotas(
-  authStorage: AuthStorage,
+  authStorage: QuotaAuthStorage,
   signal?: AbortSignal,
 ): Promise<QuotasResult> {
   const apiKey =
@@ -554,7 +558,7 @@ export async function fetchXaiQuotasWithToken(
 }
 
 export async function fetchXaiQuotas(
-  authStorage: AuthStorage,
+  authStorage: QuotaAuthStorage,
   signal?: AbortSignal,
 ): Promise<QuotasResult> {
   return fetchXaiQuotasWithToken(

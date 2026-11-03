@@ -1,22 +1,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  getAgentDir,
-  type AuthStorage,
-} from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { QuotaAuthStorage } from "../types/quotas.js";
 
 type CompatibleModelRegistry = {
-  authStorage?: AuthStorage;
+  authStorage?: QuotaAuthStorage;
   getApiKeyForProvider?: (provider: string) => Promise<string | undefined>;
-  getProviderAuth?: (provider: string) => Promise<
-    | {
-        auth?: {
-          apiKey?: string;
-          headers?: Record<string, string>;
-        };
-      }
-    | undefined
-  >;
+  getProviderAuth?: (provider: string) => Promise<unknown>;
 };
 
 function storedCredential(provider: string): unknown {
@@ -38,7 +28,7 @@ function storedCredential(provider: string): unknown {
  */
 export function quotaAuthStorage(
   modelRegistry: CompatibleModelRegistry,
-): AuthStorage {
+): QuotaAuthStorage {
   const legacy = modelRegistry.authStorage;
   if (legacy) return legacy;
 
@@ -50,9 +40,16 @@ export function quotaAuthStorage(
       const apiKey = await modelRegistry.getApiKeyForProvider?.(provider);
       if (apiKey) return apiKey;
 
-      const auth = (await modelRegistry.getProviderAuth?.(provider))?.auth;
-      const authorization = auth?.headers?.Authorization;
-      return auth?.apiKey ?? authorization?.replace(/^Bearer\s+/i, "");
+      const result = await modelRegistry.getProviderAuth?.(provider) as
+        | {
+            auth?: {
+              apiKey?: string;
+              headers?: Record<string, string | null | undefined>;
+            };
+          }
+        | undefined;
+      const authorization = result?.auth?.headers?.Authorization;
+      return result?.auth?.apiKey ?? authorization?.replace(/^Bearer\s+/i, "");
     },
-  } as unknown as AuthStorage;
+  };
 }
