@@ -10,4 +10,4 @@
 - [MCP status indicator](pi-mcp-status.md) — footer count, local refresh, limitations, installation, and validation.
 - [Local Pi resources](local-resources.md) — local extension packages, prompt files, agent scan paths, and extension tests.
 - [Pi session auto-rename](pi-session-auto-rename.md) — local installation, Beans identifier rule, and validation.
-- [Quota monitoring package](../extensions/pi-quotas/README.md) — quota status, routed-provider behavior, and local package setup.
+- [Quota footer](../extensions/pi-quotas-usage-status/README.md) — provider quota status, virtual routing, and local installation.
