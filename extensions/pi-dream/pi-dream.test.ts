@@ -13,6 +13,7 @@ import {
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join, relative, resolve } from "node:path";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -78,10 +79,11 @@ function messageEntry(
 }
 
 try {
-  assert.equal(dreamTest.parseBatchCount("", 10, 25), 10);
-  assert.equal(dreamTest.parseBatchCount("3", 10, 25), 3);
-  assert.equal(dreamTest.parseBatchCount("999", 10, 25), 25);
-  assert.throws(() => dreamTest.parseBatchCount("none", 10, 25), /number/);
+  assert.equal(dreamTest.parseBatchCount("", 10, 100), 10);
+  assert.equal(dreamTest.parseBatchCount("3", 10, 100), 3);
+  assert.equal(dreamTest.parseBatchCount("100", 10, 100), 100);
+  assert.equal(dreamTest.parseBatchCount("999", 10, 100), 100);
+  assert.throws(() => dreamTest.parseBatchCount("none", 10, 100), /number/);
 
   const branch = [
     messageEntry("sys-1", "system", "Private system text"),
@@ -335,6 +337,30 @@ try {
   ]);
   assert.deepEqual([...tools.keys()], []);
 
+  const originalList = SessionManager.list;
+  try {
+    SessionManager.list = async () => Array.from({ length: 101 }, (_, index) => ({
+      id: `limit-session-${index}`, modified: new Date(index),
+    })) as Awaited<ReturnType<typeof SessionManager.list>>;
+    for (const [args, count] of [["", 10], ["3", 3], ["100", 100], ["999", 100]] as const) {
+      let confirmation = "";
+      await commands.get("dream")!.handler(args, {
+        cwd: tempRoot, hasUI: true,
+        modelRegistry: { find: () => ({ api: "test" }) },
+        ui: {
+          confirm: async (_title: string, text: string) => {
+            confirmation = text;
+            return false;
+          },
+        },
+      } as unknown as ExtensionContext);
+      assert.ok(confirmation.startsWith(`${count} session(s)`));
+      assert.match(confirmation, /Up to 10 worker\(s\) will run at once\./);
+    }
+  } finally {
+    SessionManager.list = originalList;
+  }
+
   const statusHome = join(tempRoot, "status-home");
   process.env.PI_DREAM_HOME = statusHome;
   const statuses = new Map<string, string | undefined>();
@@ -561,6 +587,61 @@ try {
       "candidate",
     );
     assert.equal(existsSync(workerRoot), false);
+  }
+
+  const limitPi = join(tempRoot, "limit-pi.mjs");
+  writeFileSync(limitPi, [
+    "#!/usr/bin/env node",
+    'import { readFileSync } from "node:fs";',
+    'import { join } from "node:path";',
+    `import { withLock, writeJson } from ${JSON.stringify(new URL("./store.mjs", import.meta.url).href)};`,
+    "readFileSync(0);",
+    'const root = process.env.PI_DREAM_JOB_DIR;',
+    'const path = join(root, "counts.json");',
+    'await withLock(join(root, ".counts-lock"), () => {',
+    '  const state = JSON.parse(readFileSync(path, "utf8"));',
+    '  state.active += 1;',
+    '  state.peak = Math.max(state.peak, state.active);',
+    '  state.calls.push(process.env.PI_DREAM_SESSION_ID);',
+    '  writeJson(path, state);',
+    '});',
+    'while (JSON.parse(readFileSync(path, "utf8")).calls.length < 10) {',
+    '  await new Promise((resolve) => setTimeout(resolve, 10));',
+    '}',
+    'await new Promise((resolve) => setTimeout(resolve, 20));',
+    'await withLock(join(root, ".counts-lock"), () => {',
+    '  const state = JSON.parse(readFileSync(path, "utf8"));',
+    '  state.active -= 1;',
+    '  writeJson(path, state);',
+    '});',
+  ].join("\n"));
+  chmodSync(limitPi, 0o755);
+  for (const requested of [undefined, 100]) {
+    const id = requested === undefined ? "limit-default" : "limit-capped";
+    const dir = join(tempRoot, id);
+    const candidate = join(dir, "candidate");
+    const base = dreamTest.createCandidateSnapshot(runnerLive, candidate);
+    const transcripts = Array.from({ length: 100 }, (_, index) => ({
+      ...transcriptPaths[1], sessionId: `${id}-${index}`,
+    }));
+    const manifestPath = join(dir, "manifest.json");
+    writeFileSync(manifestPath, JSON.stringify({
+      version: 2, id, model: "test/model", concurrency: requested,
+      memoryRoot: runnerLive, candidateRoot: candidate, jobDir: dir,
+      workerExtension: join(tempRoot, "worker-extension.ts"),
+      sessionIds: transcripts.map((item) => item.sessionId), transcripts, base,
+    }));
+    writeFileSync(join(dir, "state.json"), JSON.stringify({ id, status: "queued", completed: 0, total: 100 }));
+    writeFileSync(join(dir, "counts.json"), JSON.stringify({ active: 0, peak: 0, calls: [] }));
+    assert.deepEqual(await runJob(manifestPath, { piBin: limitPi, timeoutMs: 10_000 }), { status: "ready" });
+    const counts = JSON.parse(readFileSync(join(dir, "counts.json"), "utf8"));
+    assert.equal(counts.active, 0);
+    assert.equal(counts.peak, 10);
+    assert.deepEqual(counts.calls.sort(), transcripts.map((item) => item.sessionId).sort());
+    const state = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
+    assert.equal(state.completed, 100);
+    assert.equal(state.concurrency, 10);
+    assert.equal(git(runnerLive, "rev-parse", "HEAD"), base.baseCommit);
   }
 
   const conflictLive = join(tempRoot, "conflict-live");

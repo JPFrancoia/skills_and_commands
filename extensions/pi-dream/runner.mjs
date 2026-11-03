@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { publishJob, withLock, writeJson } from "./store.mjs";
 
-const DEFAULT_CONCURRENCY = 3;
+const DEFAULT_CONCURRENCY = 10;
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -131,7 +131,7 @@ export async function runJob(manifestPath, options = {}) {
     const piBin = options.piBin ?? process.env.PI_DREAM_PI_BIN ?? "pi";
     const timeoutMs = options.timeoutMs ?? 30 * 60 * 1000;
     const concurrency = Math.max(1, Math.min(
-      Number(manifest.concurrency) || DEFAULT_CONCURRENCY, manifest.transcripts.length,
+      Number(manifest.concurrency) || DEFAULT_CONCURRENCY, DEFAULT_CONCURRENCY, manifest.transcripts.length,
     ));
     let completed = 0;
     updateState(manifest.jobDir, {

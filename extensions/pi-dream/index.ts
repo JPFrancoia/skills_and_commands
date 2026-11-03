@@ -26,8 +26,8 @@ import {
 } from "./store.mjs";
 
 const DEFAULT_BATCH = 10;
-const MAX_BATCH = 25;
-const DEFAULT_CONCURRENCY = 3;
+const MAX_BATCH = 100;
+const DEFAULT_CONCURRENCY = 10;
 const INDEX_FILE_LIMIT = 100;
 const INDEX_CHARACTER_LIMIT = 12_000;
 

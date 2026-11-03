@@ -22,7 +22,7 @@ Pi Dream stores jobs under `~/.pi/agent/dreams/jobs/<job-id>/`. A job contains i
 
 | Command | Action |
 | --- | --- |
-| `/dream [count]` | Start a background batch. The default is 10 sessions. The maximum is 25. |
+| `/dream [count]` | Start a background batch. The default is 10 sessions. The maximum is 100. |
 | `/dream-status [job-id]` | List all jobs and worker progress, or show one job. |
 | `/dream-review [job-id]` | Publish a job branch and write its review file. |
 | `/dream-apply [job-id]` | Fast-forward `master` from a reviewed branch. |
@@ -38,7 +38,9 @@ In UI sessions, the status area shows the latest job across all working director
 
 Pi Dream rebuilds the active branch for each selected session. It exports user, assistant, and tool-result text. It excludes system messages and extension state. Each transcript records the session ID, working directory, creation time, and source entry IDs. The extension redacts common credential forms before it gives a transcript to a worker.
 
-The runner starts up to three workers at the same time. They share one batch folder. A lock allows one worker at a time to check file hashes, edit files, or write shared evidence. A lock prevents simultaneous access to shared data.
+The runner starts up to 10 workers at the same time in each batch. A manifest can request fewer workers. The runner caps larger requests at 10. Different batches can run at the same time, so the total can exceed 10. More sessions and workers can use more resources and reach provider rate limits.
+
+Workers share one batch folder. A lock allows one worker at a time to check file hashes, edit files, or write shared evidence. A lock prevents simultaneous access to shared data.
 
 The runner sends each prompt through standard input. Standard input is the data stream that a process reads. This method avoids command-line size limits for long transcripts. Worker output goes directly to `<job>/workers/<index>-<session-id>/worker.log`. The runner does not keep Pi JSON output in memory. This method prevents `spawnSync pi ENOBUFS`.
 
