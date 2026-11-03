@@ -14,6 +14,8 @@ import {
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { withLock, validateMarkdown } from "./store.mjs";
+export { validateMarkdown } from "./store.mjs";
 
 export type Evidence = { entryId: string; quote: string };
 export type EditInput = {
@@ -95,22 +97,6 @@ export function resolveMemoryPath(root: string, input: string): string {
   return target;
 }
 
-export function validateMarkdown(content: string): string {
-  const normalized = content.replace(/\r\n/g, "\n");
-  const match = normalized.match(/^---\n([\s\S]*?)\n---(?:\n|$)/);
-  if (!match) {
-    throw new Error("The Markdown file needs front matter with a description.");
-  }
-  const description = match[1]
-    .split("\n")
-    .map((line) => line.match(/^description:\s*(.+)\s*$/)?.[1]?.trim())
-    .find(Boolean);
-  if (!description) {
-    throw new Error("The Markdown front matter needs a description.");
-  }
-  return description.replace(/^['"]|['"]$/g, "");
-}
-
 export function listMarkdown(root: string): Array<{
   path: string;
   description: string;
@@ -182,62 +168,64 @@ export async function applyMemoryEdit(
   context: EditContext,
   input: EditInput,
 ): Promise<EditResult> {
-  if (!input.reason.trim()) throw new Error("The edit reason is required.");
-  validateEvidence(context.transcript, input.evidence);
+  return withLock(join(context.memoryRoot, ".edit-lock"), async () => {
+    if (!input.reason.trim()) throw new Error("The edit reason is required.");
+    validateEvidence(context.transcript, input.evidence);
 
-  const sourcePath = resolveMemoryPath(context.memoryRoot, input.path);
-  const oldHash = currentHash(sourcePath);
-  requireHash(oldHash, input.expectedHash, input.path);
+    const sourcePath = resolveMemoryPath(context.memoryRoot, input.path);
+    const oldHash = currentHash(sourcePath);
+    requireHash(oldHash, input.expectedHash, input.path);
 
-  let resultPath = input.path;
-  let newHash = MISSING;
-  if (input.action === "write") {
-    if (input.content === undefined) throw new Error("Write operations need content.");
-    validateMarkdown(input.content);
-    atomicWrite(sourcePath, input.content);
-    newHash = sha256File(sourcePath);
-  } else if (input.action === "delete") {
-    if (oldHash === MISSING) throw new Error(`The memory file does not exist: ${input.path}`);
-    unlinkSync(sourcePath);
-  } else {
-    if (oldHash === MISSING) throw new Error(`The memory file does not exist: ${input.path}`);
-    if (!input.destination) throw new Error("Move operations need a destination.");
-    const destinationPath = resolveMemoryPath(context.memoryRoot, input.destination);
-    const destinationHash = currentHash(destinationPath);
-    requireHash(
-      destinationHash,
-      input.expectedDestinationHash ?? MISSING,
-      input.destination,
-    );
-    mkdirSync(dirname(destinationPath), { recursive: true });
-    renameSync(sourcePath, destinationPath);
-    resultPath = input.destination;
-    newHash = sha256File(destinationPath);
-  }
+    let resultPath = input.path;
+    let newHash = MISSING;
+    if (input.action === "write") {
+      if (input.content === undefined) throw new Error("Write operations need content.");
+      validateMarkdown(input.content);
+      atomicWrite(sourcePath, input.content);
+      newHash = sha256File(sourcePath);
+    } else if (input.action === "delete") {
+      if (oldHash === MISSING) throw new Error(`The memory file does not exist: ${input.path}`);
+      unlinkSync(sourcePath);
+    } else {
+      if (oldHash === MISSING) throw new Error(`The memory file does not exist: ${input.path}`);
+      if (!input.destination) throw new Error("Move operations need a destination.");
+      const destinationPath = resolveMemoryPath(context.memoryRoot, input.destination);
+      const destinationHash = currentHash(destinationPath);
+      requireHash(
+        destinationHash,
+        input.expectedDestinationHash ?? MISSING,
+        input.destination,
+      );
+      mkdirSync(dirname(destinationPath), { recursive: true });
+      renameSync(sourcePath, destinationPath);
+      resultPath = input.destination;
+      newHash = sha256File(destinationPath);
+    }
 
-  mkdirSync(context.jobDir, { recursive: true });
-  const record = {
-    version: 1,
-    jobId: context.jobId,
-    sessionId: context.sessionId,
-    author: "Pi Dream worker",
-    time: (context.now ?? (() => new Date().toISOString()))(),
-    action: input.action,
-    path: resultPath,
-    sourcePath: input.action === "move" ? input.path : undefined,
-    oldHash,
-    newHash,
-    reason: input.reason,
-    evidence: input.evidence,
-  };
-  appendFileSync(join(context.jobDir, "writes.jsonl"), `${JSON.stringify(record)}\n`, "utf8");
-  return {
-    action: input.action,
-    path: resultPath,
-    sourcePath: record.sourcePath,
-    oldHash,
-    newHash,
-  };
+    mkdirSync(context.jobDir, { recursive: true });
+    const record = {
+      version: 1,
+      jobId: context.jobId,
+      sessionId: context.sessionId,
+      author: "Pi Dream worker",
+      time: (context.now ?? (() => new Date().toISOString()))(),
+      action: input.action,
+      path: resultPath,
+      sourcePath: input.action === "move" ? input.path : undefined,
+      oldHash,
+      newHash,
+      reason: input.reason,
+      evidence: input.evidence,
+    };
+    appendFileSync(join(context.jobDir, "writes.jsonl"), `${JSON.stringify(record)}\n`, "utf8");
+    return {
+      action: input.action,
+      path: resultPath,
+      sourcePath: record.sourcePath,
+      oldHash,
+      newHash,
+    };
+  });
 }
 
 function workerContext(): EditContext {
@@ -275,10 +263,10 @@ export default function workerExtension(pi: ExtensionAPI): void {
     executionMode: "sequential",
     async execute() {
       const context = workerContext();
-      return {
+      return withLock(join(context.memoryRoot, ".edit-lock"), () => ({
         content: [{ type: "text", text: JSON.stringify(listMarkdown(context.memoryRoot), null, 2) }],
         details: {},
-      };
+      }));
     },
   });
 
@@ -290,11 +278,13 @@ export default function workerExtension(pi: ExtensionAPI): void {
     executionMode: "sequential",
     async execute(_id, input) {
       const context = workerContext();
-      const path = resolveMemoryPath(context.memoryRoot, input.path);
-      return {
-        content: [{ type: "text", text: readFileSync(path, "utf8") }],
-        details: {},
-      };
+      return withLock(join(context.memoryRoot, ".edit-lock"), () => {
+        const path = resolveMemoryPath(context.memoryRoot, input.path);
+        return {
+          content: [{ type: "text", text: readFileSync(path, "utf8") }],
+          details: {},
+        };
+      });
     },
   });
 

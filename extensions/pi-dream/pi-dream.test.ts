@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, relative, resolve } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -50,10 +50,12 @@ const { default: workerExtension, __test__: workerTest } = await import(
   "./worker-extension.ts"
 );
 const { runJob } = await import("./runner.mjs");
+const { withLock } = await import("./store.mjs");
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-C", cwd, ...args], {
     encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
   }).trim();
 }
 
@@ -123,6 +125,8 @@ try {
   assert.match(index, /Stable response preferences/);
   assert.doesNotMatch(index, /Use direct answers/);
   assert.doesNotMatch(index, /invalid\.md/);
+  assert.equal(dreamTest.buildMemoryIndex(memoryRoot, 0, 4_000), "No accepted dream memory exists.");
+  assert.equal(dreamTest.buildMemoryIndex(memoryRoot, 20, 28), "Accepted dream memory files:");
 
   assert.equal(
     workerTest.resolveMemoryPath(memoryRoot, "global/preferences.md"),
@@ -256,28 +260,42 @@ try {
     "-m",
     "Add base memory",
   );
-  const manifest = dreamTest.createCandidateClone(liveRoot, candidateRoot);
+  const manifest = dreamTest.createCandidateSnapshot(liveRoot, candidateRoot);
   writeFileSync(
     join(candidateRoot, "global", "base.md"),
     "---\ndescription: Base memory.\n---\n\n# Base\n\nImproved.\n",
   );
-  git(candidateRoot, "add", ".");
-  git(
-    candidateRoot,
-    "-c",
-    "user.name=Pi Dream",
-    "-c",
-    "user.email=pi-dream@local",
-    "commit",
-    "-m",
-    "Improve base memory",
-  );
+  const snapshotJob = join(dreamHome, "jobs", "snapshot-job");
+  mkdirSync(snapshotJob, { recursive: true });
+  const snapshotManifest = {
+    version: 2, id: "snapshot-job", jobDir: snapshotJob,
+    memoryRoot: liveRoot, candidateRoot, base: manifest,
+    sessionIds: ["snapshot-session"],
+  };
+  writeFileSync(join(snapshotJob, "manifest.json"), JSON.stringify(snapshotManifest));
+  writeFileSync(join(snapshotJob, "state.json"), JSON.stringify({
+    id: "snapshot-job", status: "running", completed: 1, total: 1,
+  }));
+  assert.equal(existsSync(join(candidateRoot, ".git")), false);
+  assert.equal(git(liveRoot, "branch", "--show-current"), "master");
+  writeFileSync(join(liveRoot, "staged.txt"), "Unrelated staged data\n");
+  git(liveRoot, "add", "staged.txt");
+  const beforeIndex = readFileSync(join(liveRoot, ".git", "index"));
+  const published = dreamTest.publishJob(snapshotManifest);
+  assert.equal(git(liveRoot, "rev-parse", "HEAD"), manifest.baseCommit);
+  assert.deepEqual(readFileSync(join(liveRoot, ".git", "index")), beforeIndex);
   assert.match(readFileSync(join(liveRoot, "global", "base.md"), "utf8"), /Original/);
-  assert.deepEqual(dreamTest.verifyLiveBase(liveRoot, manifest), []);
-  writeFileSync(join(liveRoot, "global", "base.md"), `${baseContent}\nLocal edit.\n`);
-  assert.match(dreamTest.verifyLiveBase(liveRoot, manifest).join("\n"), /global\/base\.md/);
-  writeFileSync(join(liveRoot, "global", "base.md"), baseContent);
-  dreamTest.applyCandidate(liveRoot, candidateRoot, manifest);
+  assert.match(git(liveRoot, "diff", "master..dream/snapshot-job"), /Improved/);
+  assert.equal(git(liveRoot, "diff", "--name-only", "master..dream/snapshot-job"), "global/base.md");
+  assert.throws(() => dreamTest.applyReviewBranch(snapshotManifest), /local changes/);
+  git(liveRoot, "reset", "--", "staged.txt");
+  rmSync(join(liveRoot, "staged.txt"));
+  dreamTest.applyReviewBranch(snapshotManifest);
+  writeFileSync(join(snapshotJob, "state.json"), JSON.stringify({
+    id: "snapshot-job", status: "ready", publishedCommit: published,
+  }));
+  dreamTest.reconcileJobs(dreamHome);
+  assert.equal(JSON.parse(readFileSync(join(snapshotJob, "state.json"), "utf8")).status, "applied");
   assert.match(readFileSync(join(liveRoot, "global", "base.md"), "utf8"), /Improved/);
 
   const processedPath = join(dreamHome, "state.json");
@@ -287,6 +305,7 @@ try {
     "session-1",
     "session-2",
     "session-3",
+    "snapshot-session",
   ]);
 
   const commands = new Map<string, { handler: Function }>();
@@ -314,12 +333,109 @@ try {
     "dream-review",
     "dream-status",
   ]);
-  assert.deepEqual([...tools.keys()], ["dream_memory"]);
+  assert.deepEqual([...tools.keys()], []);
 
-  const promptEvent = { systemPromptOptions: { sections: {} as Record<string, string> } };
-  events.get("before_agent_start")?.(promptEvent, {} as ExtensionContext);
-  assert.match(promptEvent.systemPromptOptions.sections["dream-memory"], /global\/preferences\.md/);
-  assert.doesNotMatch(promptEvent.systemPromptOptions.sections["dream-memory"], /Use direct answers/);
+  const statusHome = join(tempRoot, "status-home");
+  process.env.PI_DREAM_HOME = statusHome;
+  const statuses = new Map<string, string | undefined>();
+  let statusUpdates = 0;
+  const uiContext = {
+    hasUI: true,
+    ui: {
+      theme: { fg: (_color: string, text: string) => text },
+      setStatus: (key: string, value: string | undefined) => {
+        statusUpdates += 1;
+        statuses.set(key, value);
+      },
+    },
+  } as unknown as ExtensionContext;
+  const refreshStatus = () => events.get("session_start")!({}, uiContext);
+  const statusJob = join(statusHome, "jobs", "status-job");
+  const statePath = join(statusJob, "state.json");
+  try {
+    await refreshStatus();
+    assert.equal(statuses.get("dream"), "🌙 dream: idle");
+    mkdirSync(statusJob, { recursive: true });
+    for (const status of ["queued", "running", "ready", "failed", "applied", "discarded"]) {
+      writeFileSync(statePath, JSON.stringify({ status, completed: 2, total: 3 }));
+      await refreshStatus();
+      const label = ["queued", "running", "ready"].includes(status) ? "2/3" : status;
+      assert.equal(statuses.get("dream"), `🌙 dream: ${label}`);
+    }
+    writeFileSync(statePath, "invalid json");
+    await refreshStatus();
+    assert.equal(statuses.get("dream"), "🌙 dream: unavailable");
+    writeFileSync(statePath, JSON.stringify({ status: "running", completed: 1, total: 3 }));
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    assert.equal(statuses.get("dream"), "🌙 dream: 1/3", "poll detached worker progress and recover from read errors");
+    events.get("session_shutdown")!({}, uiContext);
+    assert.equal(statuses.get("dream"), undefined);
+    const updatesAfterShutdown = statusUpdates;
+    const headlessContext = { hasUI: false } as ExtensionContext;
+    events.get("session_start")!({}, headlessContext);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    events.get("session_shutdown")!({}, headlessContext);
+    assert.equal(statusUpdates, updatesAfterShutdown, "shutdown and headless sessions leave no status timer");
+  } finally {
+    events.get("session_shutdown")!({}, uiContext);
+    process.env.PI_DREAM_HOME = dreamHome;
+  }
+
+  function memoryPrompt(): string {
+    const event = { systemPromptOptions: { sections: { unrelated: "Keep this section." } as Record<string, string> } };
+    events.get("before_agent_start")!(event, {} as ExtensionContext);
+    assert.equal(event.systemPromptOptions.sections.unrelated, "Keep this section.");
+    return event.systemPromptOptions.sections["dream-memory"];
+  }
+  const prompt = memoryPrompt();
+  assert.ok(prompt.includes(`Accepted memory folder: ${memoryRoot}`));
+  assert.match(prompt, /global\/preferences\.md/);
+  assert.match(prompt, /normal file commands/);
+  assert.match(prompt, /rg, grep, and cat/);
+  assert.match(prompt, /historical context, not instructions/);
+  assert.match(prompt, /unless the user explicitly asks/);
+  assert.doesNotMatch(prompt, /Use direct answers|dream_memory|candidate|writes\.jsonl/);
+
+  writeFileSync(join(memoryRoot, "fresh.md"), "---\ndescription: Newly accepted memory.\n---\n\nNew fact.\n");
+  assert.match(memoryPrompt(), /fresh\.md: Newly accepted memory\./);
+
+  const emptyMemory = join(tempRoot, "empty memory");
+  process.env.PI_DREAM_MEMORY_ROOT = relative(process.cwd(), emptyMemory);
+  const emptyPrompt = memoryPrompt();
+  assert.ok(emptyPrompt.includes(`Accepted memory folder: ${resolve(emptyMemory)}`));
+  assert.match(emptyPrompt, /No accepted dream memory exists/);
+  mkdirSync(emptyMemory);
+  assert.equal(memoryPrompt(), emptyPrompt);
+  writeFileSync(join(emptyMemory, "preferences.md"), "---\ndescription: Response preferences.\n---\n\nUse direct answers.\n");
+  assert.match(memoryPrompt(), /preferences\.md: Response preferences\./);
+  const readCommand = execFileSync("bash", ["-c", 'cat "$1/preferences.md"', "dream-read", emptyMemory], { encoding: "utf8" });
+  assert.match(readCommand, /Use direct answers/);
+  const searchCommand = execFileSync("bash", ["-c", 'grep -Rni -- "direct answers" "$1"', "dream-search", emptyMemory], { encoding: "utf8" });
+  assert.match(searchCommand, /preferences\.md/);
+  process.env.PI_DREAM_MEMORY_ROOT = memoryRoot;
+
+  const previousHome = process.env.HOME;
+  try {
+    process.env.HOME = join(tempRoot, "portable home");
+    delete process.env.PI_DREAM_MEMORY_ROOT;
+    assert.ok(memoryPrompt().startsWith("Accepted memory folder: ~/.pi/agent/memory\n"));
+    const portableMemory = join(homedir(), ".pi", "agent", "memory");
+    mkdirSync(portableMemory, { recursive: true });
+    writeFileSync(join(portableMemory, "portable.md"), "---\ndescription: Portable memory.\n---\n\nA local fact.\n");
+    assert.match(memoryPrompt(), /portable\.md: Portable memory\./);
+    assert.doesNotMatch(memoryPrompt(), new RegExp(tempRoot));
+
+    process.env.PI_DREAM_MEMORY_ROOT = join(homedir(), "custom memory");
+    assert.ok(memoryPrompt().startsWith("Accepted memory folder: ~/custom memory\n"));
+    process.env.PI_DREAM_MEMORY_ROOT = homedir();
+    assert.ok(memoryPrompt().startsWith("Accepted memory folder: ~\n"));
+    process.env.PI_DREAM_MEMORY_ROOT = `${homedir()}-other/memory`;
+    assert.ok(memoryPrompt().startsWith(`Accepted memory folder: ${process.env.PI_DREAM_MEMORY_ROOT}\n`));
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    process.env.PI_DREAM_MEMORY_ROOT = memoryRoot;
+  }
 
   const workerTools: string[] = [];
   workerExtension({
@@ -338,7 +454,7 @@ try {
   const runnerJob = join(tempRoot, "runner-job");
   const runnerTranscripts = join(runnerJob, "transcripts");
   dreamTest.initializeMemoryStore(runnerLive);
-  const runnerBase = dreamTest.createCandidateClone(runnerLive, runnerCandidate);
+  const runnerBase = dreamTest.createCandidateSnapshot(runnerLive, runnerCandidate);
   mkdirSync(runnerTranscripts, { recursive: true });
   const transcriptPaths = ["runner-session-1", "runner-session-2", "runner-session-3"].map(
     (sessionId, index) => {
@@ -370,7 +486,7 @@ try {
       "",
       '# $PI_DREAM_SESSION_ID',
       "EOF",
-      'printf "{\\"sessionId\\":\\"%s\\",\\"action\\":\\"write\\",\\"path\\":\\"global/%s.md\\",\\"reason\\":\\"test\\",\\"evidence\\":[]}\\n" "$PI_DREAM_SESSION_ID" "$PI_DREAM_SESSION_ID" > "$PI_DREAM_JOB_DIR/writes.jsonl"',
+      'printf "{\\"sessionId\\":\\"%s\\",\\"action\\":\\"write\\",\\"path\\":\\"global/%s.md\\",\\"reason\\":\\"test\\",\\"evidence\\":[]}\\n" "$PI_DREAM_SESSION_ID" "$PI_DREAM_SESSION_ID" >> "$PI_DREAM_JOB_DIR/writes.jsonl"',
     ].join("\n"),
   );
   chmodSync(fakePi, 0o755);
@@ -378,7 +494,7 @@ try {
   writeFileSync(
     runnerManifestPath,
     JSON.stringify({
-      version: 1,
+      version: 2,
       id: "runner-job",
       cwd: tempRoot,
       createdAt: "2026-11-02T12:00:00.000Z",
@@ -396,7 +512,7 @@ try {
   writeFileSync(
     join(runnerJob, "state.json"),
     JSON.stringify({
-      version: 1,
+      version: 2,
       id: "runner-job",
       status: "queued",
       completed: 0,
@@ -424,19 +540,18 @@ try {
   assert.equal(runnerState.completed, 3);
   assert.deepEqual(runnerState.runningSessionIds, []);
   assert.equal(
-    Number(git(runnerCandidate, "rev-list", "--count", `${runnerBase.baseCommit}..HEAD`)),
-    3,
+    Number(git(runnerLive, "rev-list", "--count", `${runnerBase.baseCommit}..dream/runner-job`)),
+    1,
   );
-  assert.deepEqual(
-    git(runnerCandidate, "log", "--reverse", "--format=%s", `${runnerBase.baseCommit}..HEAD`).split("\n"),
-    transcriptPaths.map((item) => `Dream from session ${item.sessionId}`),
-  );
+  assert.equal(git(runnerLive, "log", "-1", "--format=%s", "dream/runner-job"), "Dream batch runner-job");
+  assert.equal(git(runnerLive, "rev-parse", "HEAD"), runnerBase.baseCommit);
+  assert.equal(existsSync(join(runnerCandidate, ".git")), false);
   assert.deepEqual(
     readFileSync(join(runnerJob, "writes.jsonl"), "utf8")
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line).sessionId),
-    transcriptPaths.map((item) => item.sessionId),
+      .map((line) => JSON.parse(line).sessionId).sort(),
+    transcriptPaths.map((item) => item.sessionId).sort(),
   );
   for (const [index, transcript] of transcriptPaths.entries()) {
     const workerRoot = join(
@@ -470,7 +585,7 @@ try {
     "-m",
     "Add shared memory",
   ]);
-  const conflictBase = dreamTest.createCandidateClone(conflictLive, conflictCandidate);
+  const conflictBase = dreamTest.createCandidateSnapshot(conflictLive, conflictCandidate);
   mkdirSync(conflictTranscripts, { recursive: true });
   const conflictSessions = ["conflict-session-1", "conflict-session-2"].map((sessionId) => {
     const path = join(conflictTranscripts, `${sessionId}.md`);
@@ -484,7 +599,7 @@ try {
       "#!/bin/sh",
       'printf "%s\\n" "$PI_DREAM_SESSION_ID" >> "$PI_DREAM_PARENT_JOB_DIR/conflict-calls"',
       'printf "\\n%s\\n" "$PI_DREAM_SESSION_ID" >> "$PI_DREAM_MEMORY_ROOT/global/shared.md"',
-      'printf "{\\"sessionId\\":\\"%s\\",\\"action\\":\\"write\\",\\"path\\":\\"global/shared.md\\",\\"reason\\":\\"test\\",\\"evidence\\":[]}\\n" "$PI_DREAM_SESSION_ID" > "$PI_DREAM_JOB_DIR/writes.jsonl"',
+      'printf "{\\"sessionId\\":\\"%s\\",\\"action\\":\\"write\\",\\"path\\":\\"global/shared.md\\",\\"reason\\":\\"test\\",\\"evidence\\":[]}\\n" "$PI_DREAM_SESSION_ID" >> "$PI_DREAM_JOB_DIR/writes.jsonl"',
       "cat >/dev/null",
     ].join("\n"),
   );
@@ -493,7 +608,7 @@ try {
   writeFileSync(
     conflictManifestPath,
     JSON.stringify({
-      version: 1,
+      version: 2,
       id: "conflict-job",
       cwd: tempRoot,
       createdAt: "2026-11-02T12:00:00.000Z",
@@ -511,7 +626,7 @@ try {
   writeFileSync(
     join(conflictJob, "state.json"),
     JSON.stringify({
-      version: 1,
+      version: 2,
       id: "conflict-job",
       status: "queued",
       completed: 0,
@@ -526,7 +641,7 @@ try {
     .trim()
     .split("\n");
   assert.equal(conflictCalls.filter((value) => value === "conflict-session-1").length, 1);
-  assert.equal(conflictCalls.filter((value) => value === "conflict-session-2").length, 2);
+  assert.equal(conflictCalls.filter((value) => value === "conflict-session-2").length, 1);
   const sharedMemory = readFileSync(join(conflictCandidate, "global", "shared.md"), "utf8");
   assert.equal(sharedMemory.match(/conflict-session-1/g)?.length, 1);
   assert.equal(sharedMemory.match(/conflict-session-2/g)?.length, 1);
@@ -534,9 +649,289 @@ try {
     readFileSync(join(conflictJob, "writes.jsonl"), "utf8")
       .trim()
       .split("\n")
-      .map((line) => JSON.parse(line).sessionId),
-    conflictSessions.map((item) => item.sessionId),
+      .map((line) => JSON.parse(line).sessionId).sort(),
+    conflictSessions.map((item) => item.sessionId).sort(),
   );
+
+  const competing = await Promise.allSettled(["A", "B"].map((name) => workerTest.applyMemoryEdit(editContext, {
+    action: "write", path: "global/race.md", expectedHash: "missing",
+    content: `---\ndescription: Race result.\n---\n\n${name}\n`,
+    reason: "Keep a supported preference.",
+    evidence: [{ entryId: "user-1", quote: "Use short replies." }],
+  })));
+  assert.equal(competing.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(competing.filter((result) => result.status === "rejected").length, 1);
+  const raceRecords = readFileSync(join(jobDir, "writes.jsonl"), "utf8")
+    .split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(raceRecords.filter((record) => record.path === "global/race.md").length, 1);
+
+  const concurrentHome = join(tempRoot, "concurrent-home");
+  const concurrentMemory = join(tempRoot, "concurrent-memory");
+  dreamTest.initializeMemoryStore(concurrentMemory);
+  writeFileSync(join(concurrentMemory, "keep.txt"), "Keep non-memory tracked files.\n");
+  git(concurrentMemory, "add", "keep.txt");
+  git(concurrentMemory, "-c", "user.name=Test", "-c", "user.email=test@local", "commit", "-m", "Keep metadata");
+  function makeJob(id: string, root = concurrentMemory) {
+    const dir = join(concurrentHome, "jobs", id);
+    const candidate = join(dir, "candidate");
+    const base = dreamTest.createCandidateSnapshot(root, candidate);
+    const transcript = join(dir, "transcript.md");
+    writeFileSync(transcript, "## entry user-1 | user\nUse short replies.\n");
+    const manifest = {
+      version: 2, id, cwd: tempRoot, createdAt: "2026-11-03T12:00:00.000Z",
+      model: "test/model", concurrency: 1, memoryRoot: root, candidateRoot: candidate,
+      jobDir: dir, workerExtension: join(tempRoot, "worker-extension.ts"),
+      sessionIds: [id], transcripts: [{ sessionId: id, path: transcript }], base,
+    };
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+    writeFileSync(join(dir, "state.json"), JSON.stringify({
+      version: 1, id, status: "queued", completed: 0, total: 1,
+    }));
+    return manifest;
+  }
+  const batchA = makeJob("batch-a");
+  const batchB = makeJob("batch-b");
+  assert.equal(batchA.base.baseCommit, batchB.base.baseCommit);
+  const batchPi = join(tempRoot, "batch-pi.sh");
+  writeFileSync(batchPi, [
+    "#!/bin/sh", "cat >/dev/null",
+    `touch "${tempRoot}/$PI_DREAM_SESSION_ID.started"`,
+    `while [ ! -f "${tempRoot}/batch-a.started" ] || [ ! -f "${tempRoot}/batch-b.started" ]; do sleep 0.01; done`,
+    'printf "---\\ndescription: Concurrent memory.\\n---\\n\\n%s\\n" "$PI_DREAM_SESSION_ID" > "$PI_DREAM_MEMORY_ROOT/$PI_DREAM_SESSION_ID.md"',
+  ].join("\n").replace('printf "---', 'printf -- "---'));
+  chmodSync(batchPi, 0o755);
+  const concurrentResults = await Promise.all([batchA, batchB].map((manifest) =>
+    runJob(join(manifest.jobDir, "manifest.json"), { piBin: batchPi, timeoutMs: 5_000 })));
+  assert.deepEqual(concurrentResults.map((result) => result.status), ["ready", "ready"]);
+  assert.equal(git(concurrentMemory, "rev-parse", "HEAD"), batchA.base.baseCommit);
+  assert.equal(git(concurrentMemory, "status", "--porcelain"), "");
+  assert.equal(git(concurrentMemory, "show", "dream/batch-a:keep.txt"), "Keep non-memory tracked files.");
+  assert.equal(git(concurrentMemory, "diff", "--name-only", "master..dream/batch-a"), "batch-a.md");
+  assert.equal(git(concurrentMemory, "diff", "--name-only", "master..dream/batch-b"), "batch-b.md");
+  const candidates = [{ id: "batch-a" }, { id: "batch-b" }, { id: "free" }];
+  assert.deepEqual(dreamTest.availableSessions(concurrentHome, candidates), [{ id: "free" }]);
+  git(concurrentMemory, "merge", "--ff-only", "dream/batch-a");
+  dreamTest.reconcileJobs(concurrentHome);
+  assert.deepEqual(dreamTest.loadProcessedSessions(join(concurrentHome, "state.json")), ["batch-a"]);
+  assert.throws(() => dreamTest.applyReviewBranch(batchB), /merge it manually/);
+  git(concurrentMemory, "-c", "user.name=Test", "-c", "user.email=test@local", "merge", "--no-edit", "dream/batch-b");
+  dreamTest.reconcileJobs(concurrentHome);
+  assert.deepEqual(dreamTest.loadProcessedSessions(join(concurrentHome, "state.json")), ["batch-a", "batch-b"]);
+  assert.equal(git(concurrentMemory, "branch", "--show-current"), "master");
+
+  const notifications: string[] = [];
+  const commandContext = {
+    hasUI: true,
+    ui: { confirm: async () => true, notify: (message: string) => notifications.push(message) },
+  } as unknown as ExtensionContext;
+  process.env.PI_DREAM_HOME = concurrentHome;
+  process.env.PI_DREAM_MEMORY_ROOT = concurrentMemory;
+  const empty = makeJob("empty");
+  const emptyCommit = dreamTest.publishJob(empty);
+  writeFileSync(join(empty.jobDir, "state.json"), JSON.stringify({
+    id: empty.id, status: "ready", completed: 1, total: 1,
+    publishedCommit: emptyCommit, branch: "dream/empty",
+  }));
+  assert.notEqual(emptyCommit, empty.base.baseCommit, "empty batches still need explicit acceptance");
+  await commands.get("dream-review")!.handler("empty", commandContext);
+  assert.match(readFileSync(join(empty.jobDir, "diff.md"), "utf8"), /No file changes/);
+  assert.match(notifications.at(-1)!, /dream\/empty/);
+  await commands.get("dream-status")!.handler("", commandContext);
+  assert.match(notifications.at(-1)!, /batch-a: applied/);
+  assert.match(notifications.at(-1)!, /empty: ready/);
+  await commands.get("dream-apply")!.handler("empty", commandContext);
+  assert.equal(git(concurrentMemory, "rev-parse", "HEAD"), emptyCommit);
+  assert.ok(dreamTest.loadProcessedSessions(join(concurrentHome, "state.json")).includes("empty"));
+  assert.throws(() => git(concurrentMemory, "rev-parse", "--verify", "refs/heads/dream/empty"));
+
+  for (const amend of [false, true]) {
+    const id = amend ? "amended" : "corrected";
+    const edited = makeJob(id);
+    const correctionPath = `${id}.md`;
+    writeFileSync(join(edited.candidateRoot, correctionPath),
+      "---\ndescription: Correctable memory.\n---\n\nOriginal proposal.\n");
+    const originalCommit = dreamTest.publishJob(edited);
+    writeFileSync(join(edited.jobDir, "state.json"), JSON.stringify({
+      id, status: "ready", completed: 1, total: 1,
+      publishedCommit: originalCommit, branch: `dream/${id}`,
+    }));
+    git(concurrentMemory, "switch", `dream/${id}`);
+    writeFileSync(join(concurrentMemory, correctionPath),
+      "---\ndescription: Correctable memory.\n---\n\nUser correction.\n");
+    git(concurrentMemory, "add", correctionPath);
+    git(concurrentMemory, "-c", "user.name=Test", "-c", "user.email=test@local",
+      "commit", ...(amend ? ["--amend"] : []), "-m", "Correct the proposal");
+    const correctedCommit = git(concurrentMemory, "rev-parse", "HEAD");
+    git(concurrentMemory, "switch", "master");
+    assert.notEqual(correctedCommit, originalCommit);
+    if (amend) {
+      assert.throws(() => git(concurrentMemory, "merge-base", "--is-ancestor", originalCommit, correctedCommit));
+    }
+    const masterBeforeApply = git(concurrentMemory, "rev-parse", "HEAD");
+    await commands.get("dream-apply")!.handler(id, {
+      ...commandContext, ui: { ...commandContext.ui, confirm: async () => false },
+    });
+    assert.equal(git(concurrentMemory, "rev-parse", "HEAD"), masterBeforeApply);
+    assert.equal(git(concurrentMemory, "rev-parse", `dream/${id}`), correctedCommit);
+    assert.equal(JSON.parse(readFileSync(join(edited.jobDir, "state.json"), "utf8")).publishedCommit, originalCommit);
+    if (!amend) {
+      await commands.get("dream-review")!.handler(id, commandContext);
+      const report = readFileSync(join(edited.jobDir, "diff.md"), "utf8");
+      assert.match(report, /User correction/);
+      assert.match(report, /Correct the proposal/);
+      assert.equal(git(concurrentMemory, "rev-parse", "HEAD"), masterBeforeApply);
+    }
+    await commands.get("dream-apply")!.handler(id, commandContext);
+    assert.equal(git(concurrentMemory, "rev-parse", "HEAD"), correctedCommit);
+    assert.match(readFileSync(join(concurrentMemory, correctionPath), "utf8"), /User correction/);
+    const acceptedState = JSON.parse(readFileSync(join(edited.jobDir, "state.json"), "utf8"));
+    assert.equal(acceptedState.status, "applied");
+    assert.equal(acceptedState.publishedCommit, correctedCommit);
+    assert.ok(dreamTest.loadProcessedSessions(join(concurrentHome, "state.json")).includes(id));
+    assert.equal(git(concurrentMemory, "branch", "--show-current"), "master");
+    assert.throws(() => git(concurrentMemory, "rev-parse", "--verify", `refs/heads/dream/${id}`));
+  }
+
+  const refused = makeJob("refused-apply");
+  const refusedCommit = dreamTest.publishJob(refused);
+  writeFileSync(join(refused.jobDir, "state.json"), JSON.stringify({
+    id: refused.id, status: "ready", publishedCommit: refusedCommit,
+  }));
+  writeFileSync(join(concurrentMemory, "local.txt"), "Uncommitted work.\n");
+  await assert.rejects(commands.get("dream-apply")!.handler(refused.id, commandContext), /local changes/);
+  assert.equal(git(concurrentMemory, "rev-parse", "dream/refused-apply"), refusedCommit);
+  rmSync(join(concurrentMemory, "local.txt"));
+  writeFileSync(join(concurrentMemory, "accepted.txt"), "Another accepted commit.\n");
+  git(concurrentMemory, "add", "accepted.txt");
+  git(concurrentMemory, "-c", "user.name=Test", "-c", "user.email=test@local", "commit", "-m", "Advance accepted memory");
+  await assert.rejects(commands.get("dream-apply")!.handler(refused.id, commandContext), /merge it manually/);
+  assert.equal(git(concurrentMemory, "rev-parse", "dream/refused-apply"), refusedCommit);
+
+  const cleanupFailure = makeJob("cleanup-failure");
+  const cleanupCommit = dreamTest.publishJob(cleanupFailure);
+  writeFileSync(join(cleanupFailure.jobDir, "state.json"), JSON.stringify({
+    id: cleanupFailure.id, status: "ready", publishedCommit: cleanupCommit,
+  }));
+  const refLock = join(concurrentMemory, ".git", "refs", "heads", "dream", "cleanup-failure.lock");
+  writeFileSync(refLock, "Another Git process owns this lock.\n");
+  try {
+    await commands.get("dream-apply")!.handler(cleanupFailure.id, commandContext);
+    assert.equal(git(concurrentMemory, "rev-parse", "HEAD"), cleanupCommit);
+    assert.equal(git(concurrentMemory, "rev-parse", "dream/cleanup-failure"), cleanupCommit);
+    assert.equal(JSON.parse(readFileSync(join(cleanupFailure.jobDir, "state.json"), "utf8")).status, "applied");
+    assert.ok(dreamTest.loadProcessedSessions(join(concurrentHome, "state.json")).includes(cleanupFailure.id));
+    assert.match(notifications.at(-1)!, /Applied Pi Dream job cleanup-failure, but the review branch could not be deleted\./);
+  } finally {
+    rmSync(refLock);
+  }
+  assert.equal(git(concurrentMemory, "rev-parse", "dream/batch-a").length > 0, true);
+
+  const missing = makeJob("missing-branch");
+  dreamTest.publishJob(missing);
+  git(concurrentMemory, "branch", "-D", "dream/missing-branch");
+  assert.throws(() => dreamTest.publishJob(missing));
+  assert.throws(() => git(concurrentMemory, "rev-parse", "--verify", "refs/heads/dream/missing-branch"));
+
+  const discarded = makeJob("discard-me");
+  const discardedCommit = dreamTest.publishJob(discarded);
+  writeFileSync(join(discarded.jobDir, "state.json"), JSON.stringify({
+    id: discarded.id, status: "ready", publishedCommit: discardedCommit,
+  }));
+  await commands.get("dream-discard")!.handler("discard-me", commandContext);
+  assert.equal(existsSync(discarded.candidateRoot), false);
+  assert.throws(() => git(concurrentMemory, "rev-parse", "--verify", "refs/heads/dream/discard-me"));
+  assert.deepEqual(dreamTest.availableSessions(concurrentHome, [{ id: "discard-me" }]), [{ id: "discard-me" }]);
+  assert.throws(() => dreamTest.selectJob(concurrentHome, "../escape"), /invalid/);
+  assert.throws(() => dreamTest.selectJob(concurrentHome, "unknown"), /does not exist/);
+
+  const failed = makeJob("failed");
+  const failPi = join(tempRoot, "fail-pi.sh");
+  writeFileSync(failPi, "#!/bin/sh\ncat >/dev/null\nexit 1\n");
+  chmodSync(failPi, 0o755);
+  assert.equal((await runJob(join(failed.jobDir, "manifest.json"), { piBin: failPi })).status, "failed");
+  assert.throws(() => git(concurrentMemory, "rev-parse", "--verify", "refs/heads/dream/failed"));
+  assert.deepEqual(dreamTest.availableSessions(concurrentHome, [{ id: "failed" }]), [{ id: "failed" }]);
+
+  const legacy = makeJob("legacy");
+  rmSync(legacy.candidateRoot, { recursive: true });
+  git(concurrentMemory, "clone", "--quiet", concurrentMemory, legacy.candidateRoot);
+  writeFileSync(join(legacy.candidateRoot, "legacy.md"), "---\ndescription: Legacy memory.\n---\n\nLegacy.\n");
+  git(legacy.candidateRoot, "add", ".");
+  git(legacy.candidateRoot, "-c", "user.name=Test", "-c", "user.email=test@local", "commit", "-m", "Legacy proposal");
+  writeFileSync(join(legacy.jobDir, "manifest.json"), JSON.stringify({ ...legacy, version: 1 }));
+  writeFileSync(join(legacy.jobDir, "state.json"), JSON.stringify({ id: legacy.id, status: "ready" }));
+  await commands.get("dream-review")!.handler("legacy", commandContext);
+  assert.equal(git(concurrentMemory, "show", "dream/legacy:legacy.md"), "---\ndescription: Legacy memory.\n---\n\nLegacy.");
+  assert.equal(git(concurrentMemory, "branch", "--show-current"), "master");
+  assert.equal(existsSync(join(concurrentMemory, "legacy.md")), false);
+  assert.equal(existsSync(join(legacy.candidateRoot, ".git")), true);
+
+  const renamed = join(tempRoot, "rename-memory");
+  dreamTest.initializeMemoryStore(renamed);
+  git(renamed, "branch", "-m", "main");
+  dreamTest.initializeMemoryStore(renamed);
+  assert.equal(git(renamed, "branch", "--show-current"), "master");
+  git(renamed, "branch", "-m", "main");
+  git(renamed, "branch", "master");
+  assert.throws(() => dreamTest.initializeMemoryStore(renamed), /Both main and master/);
+
+  const bad = makeJob("invalid-memory");
+  writeFileSync(join(bad.candidateRoot, "invalid.md"), "Missing metadata\n");
+  assert.throws(() => dreamTest.publishJob(bad), /front matter/);
+  assert.throws(() => git(concurrentMemory, "rev-parse", "--verify", "refs/heads/dream/invalid-memory"));
+
+  let inLock = 0;
+  await Promise.all([1, 2].map(() => withLock(join(tempRoot, "test-lock"), async () => {
+    inLock += 1;
+    assert.equal(inLock, 1);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    inLock -= 1;
+  })));
+  mkdirSync(join(tempRoot, "stale-lock"));
+  await assert.rejects(withLock(join(tempRoot, "stale-lock"), () => {}, 1), /Lock timed out/);
+  const claimHome = join(tempRoot, "claims");
+  const storeUrl = new URL("./store.mjs", import.meta.url).href;
+  async function childRun(code: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ["--input-type=module", "-e", code]);
+      let output = "";
+      let errors = "";
+      child.stdout.on("data", (data) => { output += data; });
+      child.stderr.on("data", (data) => { errors += data; });
+      child.on("error", reject);
+      child.on("close", (code) => code === 0 ? resolve(output.trim()) : reject(new Error(errors)));
+    });
+  }
+  const claims = await Promise.all(["one", "two"].map((id) => childRun(`
+    import { withLock, availableSessions, writeJson, markSessionsProcessed } from ${JSON.stringify(storeUrl)};
+    import { join } from "node:path";
+    const home = ${JSON.stringify(claimHome)};
+    await withLock(join(home, ".state-lock"), async () => {
+      const chosen = availableSessions(home, [{ id: "reserved-1" }, { id: "reserved-2" }])[0];
+      if (!chosen) throw new Error("A distinct session must remain available.");
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      const dir = join(home, "jobs", ${JSON.stringify(id)});
+      writeJson(join(dir, "manifest.json"), { sessionIds: [chosen.id] });
+      writeJson(join(dir, "state.json"), { status: "queued" });
+      markSessionsProcessed(join(home, "other-state.json"), [${JSON.stringify(id)}]);
+      console.log(chosen.id);
+    });
+  `)));
+  assert.deepEqual(claims.sort(), ["reserved-1", "reserved-2"]);
+  assert.deepEqual(dreamTest.loadProcessedSessions(join(claimHome, "other-state.json")), ["one", "two"]);
+
+  const deleteJob = makeJob("delete-test");
+  rmSync(join(deleteJob.candidateRoot, "README.md"));
+  dreamTest.publishJob(deleteJob);
+  assert.equal(git(concurrentMemory, "diff", "--name-status", "master..dream/delete-test"), "D\tREADME.md");
+  assert.equal(existsSync(join(concurrentMemory, "README.md")), true);
+  const symlinkJob = makeJob("symlink-test");
+  symlinkSync(outside, join(symlinkJob.candidateRoot, "escape"), "dir");
+  assert.throws(() => dreamTest.publishJob(symlinkJob), /symlink/);
+  assert.equal(git(concurrentMemory, "branch", "--show-current"), "master");
+
+  process.env.PI_DREAM_HOME = dreamHome;
+  process.env.PI_DREAM_MEMORY_ROOT = memoryRoot;
 
   console.log("pi-dream tests passed");
 } finally {
