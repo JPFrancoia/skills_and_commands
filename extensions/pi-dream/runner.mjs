@@ -62,6 +62,7 @@ function workerArgs(manifest) {
     "--no-builtin-tools",
     "--extension",
     manifest.workerExtension,
+    ...(manifest.extensions ?? []).flatMap((path) => ["--extension", path]),
     "--tools",
     "dream_memory_list,dream_memory_read,dream_memory_edit",
     "--model",
@@ -124,6 +125,8 @@ function appendWorkerSummary(manifest, transcript, result, workerDir) {
     "",
   ].join("\n"), "utf8");
 }
+
+export const __test__ = { workerArgs };
 
 export async function runJob(manifestPath, options = {}) {
   const manifest = readJson(manifestPath);

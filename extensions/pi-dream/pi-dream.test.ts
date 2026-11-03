@@ -50,7 +50,7 @@ const { default: piDream, __test__: dreamTest } = await import("./index.ts");
 const { default: workerExtension, __test__: workerTest } = await import(
   "./worker-extension.ts"
 );
-const { runJob } = await import("./runner.mjs");
+const { runJob, __test__: runnerTest } = await import("./runner.mjs");
 const { withLock } = await import("./store.mjs");
 
 function git(cwd: string, ...args: string[]): string {
@@ -360,6 +360,17 @@ try {
   } finally {
     SessionManager.list = originalList;
   }
+
+  assert.deepEqual(dreamTest.workerExtensions(pi), []);
+  const extensionPaths = dreamTest.workerExtensions({
+    getSettings: () => ({ dream: { extensions: ["~/gateway/index.ts", "/abs/provider.ts", 3, ""] } }),
+  } as unknown as ExtensionAPI);
+  assert.deepEqual(extensionPaths, [join(homedir(), "gateway/index.ts"), "/abs/provider.ts"]);
+  const args = runnerTest.workerArgs({ workerExtension: "/w.ts", extensions: extensionPaths, model: "p/m" });
+  assert.deepEqual(args.slice(args.indexOf("--extension"), args.indexOf("--tools")), [
+    "--extension", "/w.ts", "--extension", extensionPaths[0], "--extension", "/abs/provider.ts",
+  ]);
+  assert.ok(runnerTest.workerArgs({ workerExtension: "/w.ts", model: "p/m" }).includes("--no-extensions"));
 
   const statusHome = join(tempRoot, "status-home");
   process.env.PI_DREAM_HOME = statusHome;
