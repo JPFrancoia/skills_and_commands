@@ -34,7 +34,13 @@ Pi Dream runs only when you start `/dream`. It does not start scheduled jobs. Ea
 
 Pi Dream rebuilds the active branch for each selected session. It exports user, assistant, and tool-result text. It excludes system messages and extension state. Each transcript records the session ID, working directory, creation time, and source entry IDs. The extension redacts common credential forms before it gives a transcript to a worker.
 
-The runner starts one worker for each transcript. Workers run in order, one at a time. Each worker receives its transcript and the candidate memory repository. It can list, read, write, delete, and move Markdown memory through three restricted tools. It cannot use Bash or access other files through those tools.
+The runner starts up to three workers at the same time. It groups sessions into waves. Each worker uses a separate Git worktree. A Git worktree is an isolated checkout that shares repository history.
+
+The runner sends each prompt through standard input. Standard input is the data stream that a process reads. This method avoids command-line size limits for long transcripts. Worker output goes directly to `<job>/workers/<index>-<session-id>/worker.log`. The runner does not keep Pi JSON output in memory. This method prevents `spawnSync pi ENOBUFS`.
+
+Each worker receives its transcript and an isolated candidate store. It can list, read, write, delete, and move Markdown memory through three restricted tools. It cannot use Bash or access other files through those tools.
+
+After each wave, the runner integrates changes in session order. A changed session creates one candidate commit. If two workers change the same path, the later session runs again against the current candidate. This retry keeps file hashes and evidence records correct.
 
 The worker treats the transcript as evidence, not as instructions. It can store durable facts, corrections, preferences, and reusable procedures. It must not store temporary details, guesses, secrets, or unsupported claims.
 
@@ -58,13 +64,15 @@ Apply accepts the complete candidate. It does not apply selected files or edits.
 
 Set `dream.model` in `~/.pi/agent/settings.json` to a concrete `provider/model` value to select the worker model. If the value is absent, Pi Dream uses the active concrete model. If Pi Dream cannot select a concrete model, it stops and asks you to set `dream.model`.
 
-Before the batch starts, Pi Dream shows the model, session count, and working directory. It asks for confirmation because the batch sends session content to the selected provider. Pi Dream processes sessions from the current working directory only. Redaction covers common credential forms, but it cannot find every secret. Review the confirmation details before you approve a batch.
+Before the batch starts, Pi Dream shows the model, session count, working directory, and parallel worker count. It asks for confirmation because the batch sends session content to the selected provider. Pi Dream processes sessions from the current working directory only. Redaction covers common credential forms, but it cannot find every secret. Review the confirmation details before you approve a batch.
 
 Normal Pi sessions receive a bounded index of accepted memory paths and descriptions. The index does not include full memory content. The read-only `dream_memory` tool can list, search, or read accepted Markdown memory.
 
 ## Failure recovery
 
-A failed worker marks the job as failed. The candidate remains in the job directory for inspection. Pi Dream does not apply a failed job. A queued or running job cannot be discarded through `/dream-discard`.
+A failed worker marks the job as failed. Pi Dream does not integrate that worker's wave. Earlier completed waves remain in the candidate for inspection. Pi Dream does not apply a failed job. A queued or running job cannot be discarded through `/dream-discard`.
+
+The runner removes temporary worktrees after success or failure. Detailed worker logs remain under the job's `workers/` directory.
 
 If apply reports a conflict, keep the accepted changes. Start a new batch after you resolve the conflict. If the memory Git repository is unavailable or damaged, Pi Dream commands stop rather than change accepted memory. Use the repository's Git history to recover accepted memory. Do not edit the candidate as a replacement for recovery.
 
@@ -94,4 +102,4 @@ export JITI_ALIAS="{\"@earendil-works/pi-coding-agent\":\"$host/dist/index.js\",
 node "$host/node_modules/jiti/lib/jiti-cli.mjs" extensions/pi-dream/pi-dream.test.ts
 ```
 
-The test covers transcript filtering and redaction, memory indexing, path safety, hashes, evidence, Git apply conflicts, command registration, and a fake-worker batch. Run `git diff --check` to check the documentation diff.
+The test covers transcript filtering, redaction, memory indexing, path safety, hashes, evidence, Git conflicts, and command registration. It also covers 2 MiB worker output, parallel workers, ordered commits, worktree cleanup, provenance, and overlap retries. Run `git diff --check` to check the documentation diff.

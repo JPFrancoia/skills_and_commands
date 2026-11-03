@@ -24,6 +24,7 @@ import { listMarkdown, resolveMemoryPath } from "./worker-extension.ts";
 
 const DEFAULT_BATCH = 10;
 const MAX_BATCH = 25;
+const DEFAULT_CONCURRENCY = 3;
 const INDEX_FILE_LIMIT = 100;
 const INDEX_CHARACTER_LIMIT = 12_000;
 
@@ -40,6 +41,7 @@ type JobManifest = {
   cwd: string;
   createdAt: string;
   model: string;
+  concurrency: number;
   memoryRoot: string;
   candidateRoot: string;
   jobDir: string;
@@ -55,7 +57,9 @@ type JobState = {
   status: "queued" | "running" | "ready" | "failed" | "applied" | "discarded";
   completed: number;
   total: number;
+  concurrency?: number;
   currentSessionId?: string;
+  runningSessionIds?: string[];
   error?: string;
   updatedAt: string;
 };
@@ -302,9 +306,10 @@ async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
     notify(ctx, "Pi Dream needs an interactive confirmation.", "error");
     return;
   }
+  const concurrency = Math.min(DEFAULT_CONCURRENCY, sessions.length);
   const approved = await ctx.ui.confirm(
     "Start Pi Dream?",
-    `${sessions.length} session(s) from ${ctx.cwd} will go to ${model}.`,
+    `${sessions.length} session(s) from ${ctx.cwd} will go to ${model}. ${concurrency} worker(s) will run at once.`,
   );
   if (!approved) return;
 
@@ -341,6 +346,7 @@ async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
     cwd: ctx.cwd,
     createdAt: new Date().toISOString(),
     model,
+    concurrency,
     memoryRoot: memoryRoot(),
     candidateRoot,
     jobDir,
@@ -356,6 +362,8 @@ async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
     status: "queued",
     completed: 0,
     total: sessions.length,
+    concurrency,
+    runningSessionIds: [],
     updatedAt: new Date().toISOString(),
   });
   const child = spawn(process.execPath, [join(extensionDir, "runner.mjs"), join(jobDir, "manifest.json")], {
@@ -489,7 +497,13 @@ export default function piDream(pi: ExtensionAPI): void {
       const jobDir = latestJobDir(dreamHome());
       if (!jobDir) return notify(ctx, "No Pi Dream job exists.");
       const state = readJob<JobState>(jobDir, "state.json");
-      notify(ctx, `${state.id}: ${state.status} (${state.completed}/${state.total})${state.error ? `\n${state.error}` : ""}`);
+      const running = state.runningSessionIds?.length
+        ? `\nRunning ${state.runningSessionIds.length}: ${state.runningSessionIds.join(", ")}`
+        : "";
+      notify(
+        ctx,
+        `${state.id}: ${state.status} (${state.completed}/${state.total})${running}${state.error ? `\n${state.error}` : ""}`,
+      );
     },
   });
 

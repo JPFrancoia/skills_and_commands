@@ -340,10 +340,11 @@ try {
   dreamTest.initializeMemoryStore(runnerLive);
   const runnerBase = dreamTest.createCandidateClone(runnerLive, runnerCandidate);
   mkdirSync(runnerTranscripts, { recursive: true });
-  const transcriptPaths = ["runner-session-1", "runner-session-2"].map(
-    (sessionId) => {
+  const transcriptPaths = ["runner-session-1", "runner-session-2", "runner-session-3"].map(
+    (sessionId, index) => {
       const path = join(runnerTranscripts, `${sessionId}.md`);
-      writeFileSync(path, `## entry user-1 | user\nRemember ${sessionId}.\n`);
+      const largeEvidence = index === 0 ? "x".repeat(256 * 1024) : "";
+      writeFileSync(path, `## entry user-1 | user\nRemember ${sessionId}.\n${largeEvidence}`);
       return { sessionId, path, createdAt: "2026-11-02T12:00:00.000Z" };
     },
   );
@@ -352,7 +353,15 @@ try {
     fakePi,
     [
       "#!/bin/sh",
-      'printf "%s\\n" "$PI_DREAM_SESSION_ID" >> "$PI_DREAM_JOB_DIR/fake-calls"',
+      'printf "%s\\n" "$PI_DREAM_SESSION_ID" >> "$PI_DREAM_PARENT_JOB_DIR/fake-calls"',
+      'wc -c >> "$PI_DREAM_PARENT_JOB_DIR/fake-input-sizes"',
+      'touch "$PI_DREAM_PARENT_JOB_DIR/started-$PI_DREAM_SESSION_ID"',
+      'case "$PI_DREAM_SESSION_ID" in',
+      "  runner-session-1|runner-session-2)",
+      '    while [ ! -f "$PI_DREAM_PARENT_JOB_DIR/started-runner-session-1" ] || [ ! -f "$PI_DREAM_PARENT_JOB_DIR/started-runner-session-2" ]; do sleep 0.01; done',
+      "    ;;",
+      "esac",
+      "dd if=/dev/zero bs=1048576 count=2 2>/dev/null",
       'mkdir -p "$PI_DREAM_MEMORY_ROOT/global"',
       'cat > "$PI_DREAM_MEMORY_ROOT/global/$PI_DREAM_SESSION_ID.md" <<EOF',
       "---",
@@ -361,6 +370,7 @@ try {
       "",
       '# $PI_DREAM_SESSION_ID',
       "EOF",
+      'printf "{\\"sessionId\\":\\"%s\\",\\"action\\":\\"write\\",\\"path\\":\\"global/%s.md\\",\\"reason\\":\\"test\\",\\"evidence\\":[]}\\n" "$PI_DREAM_SESSION_ID" "$PI_DREAM_SESSION_ID" > "$PI_DREAM_JOB_DIR/writes.jsonl"',
     ].join("\n"),
   );
   chmodSync(fakePi, 0o755);
@@ -373,6 +383,7 @@ try {
       cwd: tempRoot,
       createdAt: "2026-11-02T12:00:00.000Z",
       model: "test/model",
+      concurrency: 2,
       memoryRoot: runnerLive,
       candidateRoot: runnerCandidate,
       jobDir: runnerJob,
@@ -389,25 +400,142 @@ try {
       id: "runner-job",
       status: "queued",
       completed: 0,
-      total: 2,
+      total: 3,
       updatedAt: "2026-11-02T12:00:00.000Z",
     }),
   );
-  assert.deepEqual(runJob(runnerManifestPath, { piBin: fakePi }), {
+  assert.deepEqual(await runJob(runnerManifestPath, { piBin: fakePi, timeoutMs: 5_000 }), {
     status: "ready",
   });
   assert.deepEqual(
-    readFileSync(join(runnerJob, "fake-calls"), "utf8").trim().split("\n"),
-    ["runner-session-1", "runner-session-2"],
+    readFileSync(join(runnerJob, "fake-calls"), "utf8").trim().split("\n").sort(),
+    ["runner-session-1", "runner-session-2", "runner-session-3"],
   );
+  const inputSizes = readFileSync(join(runnerJob, "fake-input-sizes"), "utf8")
+    .trim()
+    .split("\n")
+    .map(Number);
+  assert.equal(inputSizes.length, 3);
+  assert.ok(Math.max(...inputSizes) > 256 * 1024);
   const runnerState = JSON.parse(
     readFileSync(join(runnerJob, "state.json"), "utf8"),
   );
   assert.equal(runnerState.status, "ready");
-  assert.equal(runnerState.completed, 2);
+  assert.equal(runnerState.completed, 3);
+  assert.deepEqual(runnerState.runningSessionIds, []);
   assert.equal(
     Number(git(runnerCandidate, "rev-list", "--count", `${runnerBase.baseCommit}..HEAD`)),
-    2,
+    3,
+  );
+  assert.deepEqual(
+    git(runnerCandidate, "log", "--reverse", "--format=%s", `${runnerBase.baseCommit}..HEAD`).split("\n"),
+    transcriptPaths.map((item) => `Dream from session ${item.sessionId}`),
+  );
+  assert.deepEqual(
+    readFileSync(join(runnerJob, "writes.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).sessionId),
+    transcriptPaths.map((item) => item.sessionId),
+  );
+  for (const [index, transcript] of transcriptPaths.entries()) {
+    const workerRoot = join(
+      runnerJob,
+      "workers",
+      `${String(index).padStart(3, "0")}-${transcript.sessionId}`,
+      "candidate",
+    );
+    assert.equal(existsSync(workerRoot), false);
+  }
+
+  const conflictLive = join(tempRoot, "conflict-live");
+  const conflictCandidate = join(tempRoot, "conflict-candidate");
+  const conflictJob = join(tempRoot, "conflict-job");
+  const conflictTranscripts = join(conflictJob, "transcripts");
+  dreamTest.initializeMemoryStore(conflictLive);
+  mkdirSync(join(conflictLive, "global"), { recursive: true });
+  writeFileSync(
+    join(conflictLive, "global", "shared.md"),
+    "---\ndescription: Shared memory.\n---\n\n# Shared\n",
+  );
+  execFileSync("git", ["-C", conflictLive, "add", "."]);
+  execFileSync("git", [
+    "-C",
+    conflictLive,
+    "-c",
+    "user.name=Pi Dream",
+    "-c",
+    "user.email=pi-dream@local",
+    "commit",
+    "-m",
+    "Add shared memory",
+  ]);
+  const conflictBase = dreamTest.createCandidateClone(conflictLive, conflictCandidate);
+  mkdirSync(conflictTranscripts, { recursive: true });
+  const conflictSessions = ["conflict-session-1", "conflict-session-2"].map((sessionId) => {
+    const path = join(conflictTranscripts, `${sessionId}.md`);
+    writeFileSync(path, `## entry user-1 | user\nRemember ${sessionId}.\n`);
+    return { sessionId, path, createdAt: "2026-11-02T12:00:00.000Z" };
+  });
+  const conflictPi = join(tempRoot, "conflict-pi.sh");
+  writeFileSync(
+    conflictPi,
+    [
+      "#!/bin/sh",
+      'printf "%s\\n" "$PI_DREAM_SESSION_ID" >> "$PI_DREAM_PARENT_JOB_DIR/conflict-calls"',
+      'printf "\\n%s\\n" "$PI_DREAM_SESSION_ID" >> "$PI_DREAM_MEMORY_ROOT/global/shared.md"',
+      'printf "{\\"sessionId\\":\\"%s\\",\\"action\\":\\"write\\",\\"path\\":\\"global/shared.md\\",\\"reason\\":\\"test\\",\\"evidence\\":[]}\\n" "$PI_DREAM_SESSION_ID" > "$PI_DREAM_JOB_DIR/writes.jsonl"',
+      "cat >/dev/null",
+    ].join("\n"),
+  );
+  chmodSync(conflictPi, 0o755);
+  const conflictManifestPath = join(conflictJob, "manifest.json");
+  writeFileSync(
+    conflictManifestPath,
+    JSON.stringify({
+      version: 1,
+      id: "conflict-job",
+      cwd: tempRoot,
+      createdAt: "2026-11-02T12:00:00.000Z",
+      model: "test/model",
+      concurrency: 2,
+      memoryRoot: conflictLive,
+      candidateRoot: conflictCandidate,
+      jobDir: conflictJob,
+      workerExtension: join(tempRoot, "worker-extension.ts"),
+      sessionIds: conflictSessions.map((item) => item.sessionId),
+      transcripts: conflictSessions,
+      base: conflictBase,
+    }),
+  );
+  writeFileSync(
+    join(conflictJob, "state.json"),
+    JSON.stringify({
+      version: 1,
+      id: "conflict-job",
+      status: "queued",
+      completed: 0,
+      total: 2,
+      updatedAt: "2026-11-02T12:00:00.000Z",
+    }),
+  );
+  assert.deepEqual(await runJob(conflictManifestPath, { piBin: conflictPi }), {
+    status: "ready",
+  });
+  const conflictCalls = readFileSync(join(conflictJob, "conflict-calls"), "utf8")
+    .trim()
+    .split("\n");
+  assert.equal(conflictCalls.filter((value) => value === "conflict-session-1").length, 1);
+  assert.equal(conflictCalls.filter((value) => value === "conflict-session-2").length, 2);
+  const sharedMemory = readFileSync(join(conflictCandidate, "global", "shared.md"), "utf8");
+  assert.equal(sharedMemory.match(/conflict-session-1/g)?.length, 1);
+  assert.equal(sharedMemory.match(/conflict-session-2/g)?.length, 1);
+  assert.deepEqual(
+    readFileSync(join(conflictJob, "writes.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).sessionId),
+    conflictSessions.map((item) => item.sessionId),
   );
 
   console.log("pi-dream tests passed");
