@@ -186,7 +186,11 @@ def get_model():
             except Exception:
                 pass
 
-            _model = SentenceTransformer("all-mpnet-base-v2")
+            # Use the cached model first, so a proxy that blocks Hugging Face does not break the skill.
+            try:
+                _model = SentenceTransformer("all-mpnet-base-v2", local_files_only=True)
+            except Exception:
+                _model = SentenceTransformer("all-mpnet-base-v2")
 
     return _model
 
