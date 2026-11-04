@@ -364,6 +364,7 @@ try {
   const statusHome = join(tempRoot, "status-home");
   process.env.PI_DREAM_HOME = statusHome;
   const statuses = new Map<string, string | undefined>();
+  const statusNotifications: Array<{ message: string; level: string }> = [];
   let statusUpdates = 0;
   const uiContext = {
     hasUI: true,
@@ -373,6 +374,7 @@ try {
         statusUpdates += 1;
         statuses.set(key, value);
       },
+      notify: (message: string, level: string) => statusNotifications.push({ message, level }),
     },
   } as unknown as ExtensionContext;
   const refreshStatus = () => events.get("session_start")!({}, uiContext);
@@ -383,11 +385,23 @@ try {
     assert.equal(statuses.get("dream"), "🌙 dream: idle");
     mkdirSync(statusJob, { recursive: true });
     for (const status of ["queued", "running", "ready", "failed", "applied", "discarded"]) {
-      writeFileSync(statePath, JSON.stringify({ status, completed: 2, total: 3 }));
+      writeFileSync(statePath, JSON.stringify({
+        id: "status-job", status, completed: 2, total: 3,
+        error: status === "failed" ? "Codex quota exhausted." : undefined,
+      }));
       await refreshStatus();
       const label = ["queued", "running", "ready"].includes(status) ? "2/3" : status;
       assert.equal(statuses.get("dream"), `🌙 dream: ${label}`);
     }
+    assert.deepEqual(statusNotifications, [{
+      level: "error",
+      message: "Pi Dream job status-job failed after 2/3 sessions.\nCodex quota exhausted.\nRun /dream-status status-job.",
+    }]);
+    writeFileSync(statePath, JSON.stringify({
+      id: "status-job", status: "failed", completed: 2, total: 3, error: "Codex quota exhausted.",
+    }));
+    await refreshStatus();
+    assert.equal(statusNotifications.length, 1, "notify once for each failed job");
     writeFileSync(statePath, "invalid json");
     await refreshStatus();
     assert.equal(statuses.get("dream"), "🌙 dream: unavailable");
@@ -802,6 +816,7 @@ try {
 
   const notifications: string[] = [];
   const commandContext = {
+    cwd: tempRoot,
     hasUI: true,
     ui: { confirm: async () => true, notify: (message: string) => notifications.push(message) },
   } as unknown as ExtensionContext;
@@ -817,13 +832,25 @@ try {
   await commands.get("dream-review")!.handler("empty", commandContext);
   assert.match(readFileSync(join(empty.jobDir, "diff.md"), "utf8"), /No file changes/);
   assert.match(notifications.at(-1)!, /dream\/empty/);
-  await commands.get("dream-status")!.handler("", commandContext);
-  assert.match(notifications.at(-1)!, /batch-a: applied/);
-  assert.match(notifications.at(-1)!, /empty: ready/);
-  await commands.get("dream-apply")!.handler("empty", commandContext);
-  assert.equal(git(concurrentMemory, "rev-parse", "HEAD"), emptyCommit);
-  assert.ok(dreamTest.loadProcessedSessions(join(concurrentHome, "state.json")).includes("empty"));
-  assert.throws(() => git(concurrentMemory, "rev-parse", "--verify", "refs/heads/dream/empty"));
+  const originalStatusList = SessionManager.list;
+  let projectSessionIds = ["batch-a", "batch-b", "empty", "free"];
+  SessionManager.list = async () => projectSessionIds.map((id) => ({ id })) as Awaited<ReturnType<typeof SessionManager.list>>;
+  try {
+    await commands.get("dream-status")!.handler("", commandContext);
+    assert.match(notifications.at(-1)!, new RegExp(`Project sessions for ${tempRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: 2 accepted, 1 reserved, 1 available, 4 total\\.`));
+    assert.match(notifications.at(-1)!, /batch-a: applied/);
+    assert.match(notifications.at(-1)!, /empty: ready/);
+    await commands.get("dream-apply")!.handler("empty", commandContext);
+    assert.equal(git(concurrentMemory, "rev-parse", "HEAD"), emptyCommit);
+    assert.ok(dreamTest.loadProcessedSessions(join(concurrentHome, "state.json")).includes("empty"));
+    assert.throws(() => git(concurrentMemory, "rev-parse", "--verify", "refs/heads/dream/empty"));
+    projectSessionIds = ["batch-a", "batch-b", "empty"];
+    await commands.get("dream-status")!.handler("", commandContext);
+    assert.match(notifications.at(-1)!, /3 accepted, 0 reserved, 0 available, 3 total\./);
+    assert.match(notifications.at(-1)!, /All project sessions are accepted\./);
+  } finally {
+    SessionManager.list = originalStatusList;
+  }
 
   for (const amend of [false, true]) {
     const id = amend ? "amended" : "corrected";
@@ -927,11 +954,26 @@ try {
 
   const failed = makeJob("failed");
   const failPi = join(tempRoot, "fail-pi.sh");
-  writeFileSync(failPi, "#!/bin/sh\ncat >/dev/null\nexit 1\n");
+  writeFileSync(failPi, "#!/bin/sh\ncat >/dev/null\nprintf 'Codex quota exhausted.\\n' >&2\nexit 1\n");
   chmodSync(failPi, 0o755);
   assert.equal((await runJob(join(failed.jobDir, "manifest.json"), { piBin: failPi })).status, "failed");
+  const failedState = JSON.parse(readFileSync(join(failed.jobDir, "state.json"), "utf8"));
+  const failedWorker = join(failed.jobDir, "workers", "000-failed");
+  assert.match(failedState.error, /Codex quota exhausted\./);
+  assert.match(failedState.error, /worker\.error\.log/);
+  assert.equal(readFileSync(join(failedWorker, "worker.error.log"), "utf8"), "Codex quota exhausted.\n");
+  assert.doesNotMatch(readFileSync(join(failedWorker, "worker.log"), "utf8"), /Codex quota exhausted/);
   assert.throws(() => git(concurrentMemory, "rev-parse", "--verify", "refs/heads/dream/failed"));
   assert.deepEqual(dreamTest.availableSessions(concurrentHome, [{ id: "failed" }]), [{ id: "failed" }]);
+
+  const silentFailure = makeJob("silent-failure");
+  const silentFailPi = join(tempRoot, "silent-fail-pi.sh");
+  writeFileSync(silentFailPi, "#!/bin/sh\ncat >/dev/null\nexit 1\n");
+  chmodSync(silentFailPi, 0o755);
+  assert.equal((await runJob(join(silentFailure.jobDir, "manifest.json"), { piBin: silentFailPi })).status, "failed");
+  const silentState = JSON.parse(readFileSync(join(silentFailure.jobDir, "state.json"), "utf8"));
+  assert.match(silentState.error, /Worker exited with status 1\./);
+  assert.match(silentState.error, /worker\.error\.log/);
 
   const legacy = makeJob("legacy");
   rmSync(legacy.candidateRoot, { recursive: true });

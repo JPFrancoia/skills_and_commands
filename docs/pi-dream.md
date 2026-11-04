@@ -16,14 +16,14 @@ description: Stable response preferences.
 # Preferences
 ```
 
-Pi Dream stores jobs under `~/.pi/agent/dreams/jobs/<job-id>/`. A job contains its manifest, state, transcripts, candidate files, write records, and worker log. A candidate folder holds proposed memory files. It is not a Git repository or worktree.
+Pi Dream stores jobs under `~/.pi/agent/dreams/jobs/<job-id>/`. A job contains its manifest, state, transcripts, candidate files, write records, and worker logs. A candidate folder holds proposed memory files. It is not a Git repository or worktree.
 
 ## Commands
 
 | Command | Action |
 | --- | --- |
 | `/dream [count]` | Start a background batch. The default is 10 sessions. The maximum is 100. |
-| `/dream-status [job-id]` | List all jobs and worker progress, or show one job. |
+| `/dream-status [job-id]` | Show project session coverage and all jobs, or show one job. |
 | `/dream-review [job-id]` | Publish a job branch and write its review file. |
 | `/dream-apply [job-id]` | Fast-forward `master` from a reviewed branch. |
 | `/dream-discard [job-id]` | Delete a job branch and candidate files. |
@@ -32,7 +32,11 @@ These commands use the latest job when you omit `[job-id]`, except `/dream-statu
 
 Pi Dream runs only when you start `/dream`. It does not start scheduled jobs. Each batch selects unprocessed sessions from the current working directory. It selects the oldest sessions first, up to the requested count.
 
+Run `/dream-status` without a job ID to see project session coverage. An accepted session belongs to a job that is in `master` history. A reserved session belongs to a queued, running, or ready job. An available session can enter a new batch. The summary states `All project sessions are accepted.` when no project session remains.
+
 In UI sessions, the status area shows the latest job across all working directories. It refreshes once per second. With no job, it shows `🌙 dream: idle`. Queued, running, and ready jobs show completed and total counts, such as `🌙 dream: 10/10`. This compact label remains unchanged. Use `/dream-status` to see each job state. Failed, applied, and discarded jobs show their state instead of counts. A state read error shows `🌙 dream: unavailable`. The status area clears when the session shuts down. Headless sessions do not show this status.
+
+When the latest job fails, Pi Dream shows one error notification in each Pi runtime. The notification gives the job ID, progress, error, and status command.
 
 ## Session scope and workers
 
@@ -42,7 +46,7 @@ The runner starts up to 10 workers at the same time in each batch. A manifest ca
 
 Workers share one batch folder. A lock allows one worker at a time to check file hashes, edit files, or write shared evidence. A lock prevents simultaneous access to shared data.
 
-The runner sends each prompt through standard input. Standard input is the data stream that a process reads. This method avoids command-line size limits for long transcripts. Worker output goes directly to `<job>/workers/<index>-<session-id>/worker.log`. The runner does not keep Pi JSON output in memory. This method prevents `spawnSync pi ENOBUFS`.
+The runner sends each prompt through standard input. Standard input is the data stream that a process reads. This method avoids command-line size limits for long transcripts. Worker JSON output goes to `<job>/workers/<index>-<session-id>/worker.log`. Standard error is the error data stream from a process. Worker standard error goes to `<job>/workers/<index>-<session-id>/worker.error.log`. The runner does not keep Pi JSON output in memory. This method prevents `spawnSync pi ENOBUFS`.
 
 Each worker receives its transcript. Workers in one batch share a candidate store. Other batches use separate candidate stores. It can list, read, write, delete, and move Markdown memory through three restricted tools. It cannot use Bash or access other files through those tools.
 
@@ -94,6 +98,8 @@ All normal sessions use the same accepted memory root. Pi Dream does not filter 
 
 A failed worker marks the job as failed. The job does not publish a branch. Pi Dream does not apply a failed job. A queued or running job cannot be discarded through `/dream-discard`.
 
+Pi Dream stores the worker error in the job state. The error includes the path to `worker.error.log`. The UI notification shows this error when the latest job fails.
+
 Detailed worker logs remain under the job's `workers/` directory. If a process crashes while it holds a lock, the lock remains. Lock attempts stop with a bounded timeout error. Before you remove a lock manually, make sure that no active process uses it.
 
 If apply cannot fast-forward, review and merge the branch manually in the accepted repository. If Git reports conflicts, resolve them before you complete the merge. If the memory Git repository is unavailable or damaged, Pi Dream commands stop rather than change accepted memory. Use the repository's Git history to recover accepted memory. Do not edit the candidate as a replacement for recovery.
@@ -124,4 +130,4 @@ export JITI_ALIAS="{\"@earendil-works/pi-coding-agent\":\"$host/dist/index.js\",
 node "$host/node_modules/jiti/lib/jiti-cli.mjs" extensions/pi-dream/pi-dream.test.ts
 ```
 
-The test covers transcript filtering, redaction, memory indexing, path safety, hashes, evidence, Git conflicts, and command registration. It also covers 2 MiB worker output, concurrent jobs, parallel workers, manual merges, batch publication, session reservations across processes, and legacy job review. Run `git diff --check` to check the documentation diff.
+The test covers transcript filtering, redaction, memory indexing, path safety, hashes, evidence, Git conflicts, and command registration. It also covers project coverage, failure notifications, worker error logs, 2 MiB output, concurrent jobs, parallel workers, manual merges, batch publication, session reservations, and legacy job review. Run `git diff --check` to check the documentation diff.

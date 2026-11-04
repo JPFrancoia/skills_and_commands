@@ -264,6 +264,17 @@ function notify(ctx: ExtensionContext, message: string, level: "info" | "warning
   if (ctx.hasUI) ctx.ui.notify(message, level);
 }
 
+function projectCoverage(home: string, cwd: string, sessions: Array<{ id: string }>): string {
+  const available = availableSessions(home, sessions).length;
+  const acceptedIds = new Set(loadProcessedSessions(join(home, "state.json")));
+  const accepted = sessions.filter((session) => acceptedIds.has(session.id)).length;
+  const reserved = sessions.length - accepted - available;
+  const summary = `Project sessions for ${cwd}: ${accepted} accepted, ${reserved} reserved, ${available} available, ${sessions.length} total.`;
+  return sessions.length > 0 && accepted === sessions.length
+    ? `${summary}\nAll project sessions are accepted.`
+    : summary;
+}
+
 async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext): Promise<void> {
   const count = parseBatchCount(args, DEFAULT_BATCH, MAX_BATCH);
   const model = selectModel(pi, ctx);
@@ -403,6 +414,7 @@ function reviewJob(jobDir: string, ctx: ExtensionContext): void {
 
 export default function piDream(pi: ExtensionAPI): void {
   let statusTimer: ReturnType<typeof setInterval> | undefined;
+  const notifiedFailures = new Set<string>();
   const stopStatus = () => {
     clearInterval(statusTimer);
     statusTimer = undefined;
@@ -422,6 +434,14 @@ export default function piDream(pi: ExtensionAPI): void {
           ? `${state.completed}/${state.total}`
           : state.status;
         text = `🌙 dream: ${label}`;
+        if (state.status === "failed" && !notifiedFailures.has(state.id)) {
+          notifiedFailures.add(state.id);
+          notify(ctx, [
+            `Pi Dream job ${state.id} failed after ${state.completed}/${state.total} sessions.`,
+            state.error ?? "No error details were recorded.",
+            `Run /dream-status ${state.id}.`,
+          ].join("\n"), "error");
+        }
       }
     } catch {
       text = "🌙 dream: unavailable";
@@ -463,17 +483,22 @@ export default function piDream(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("dream-status", {
-    description: "Show jobs and worker progress: /dream-status [job-id]",
-    handler: async (args, ctx) => withLock(join(dreamHome(), ".state-lock"), () => {
-      reconcileJobs(dreamHome());
-      const dirs = args.trim() ? [selectJob(dreamHome(), args)!] : jobDirectories(dreamHome());
-      if (!dirs.length) return notify(ctx, "No Pi Dream job exists.");
-      const rows = dirs.map((dir) => {
-        const state = readJob<JobState>(dir, "state.json");
-        return `${state.id}: ${state.status} (${state.completed}/${state.total})${state.branch ? ` ${state.branch}` : ""}${state.runningSessionIds?.length ? `\nRunning ${state.runningSessionIds.length}: ${state.runningSessionIds.join(", ")}` : ""}${state.error ? `\n${state.error}` : ""}`;
+    description: "Show project coverage and worker progress: /dream-status [job-id]",
+    handler: async (args, ctx) => {
+      const id = args.trim();
+      const sessions = id ? undefined : await SessionManager.list(ctx.cwd);
+      return withLock(join(dreamHome(), ".state-lock"), () => {
+        reconcileJobs(dreamHome());
+        const dirs = id ? [selectJob(dreamHome(), id)!] : jobDirectories(dreamHome());
+        if (id && !dirs.length) return notify(ctx, "No Pi Dream job exists.");
+        const rows = dirs.map((dir) => {
+          const state = readJob<JobState>(dir, "state.json");
+          return `${state.id}: ${state.status} (${state.completed}/${state.total})${state.branch ? ` ${state.branch}` : ""}${state.runningSessionIds?.length ? `\nRunning ${state.runningSessionIds.length}: ${state.runningSessionIds.join(", ")}` : ""}${state.error ? `\n${state.error}` : ""}`;
+        });
+        const coverage = sessions ? projectCoverage(dreamHome(), ctx.cwd, sessions) : undefined;
+        notify(ctx, [coverage, ...rows].filter(Boolean).join("\n"));
       });
-      notify(ctx, rows.join("\n"));
-    }),
+    },
   });
 
   pi.registerCommand("dream-review", {

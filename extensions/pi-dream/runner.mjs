@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { publishJob, withLock, writeJson } from "./store.mjs";
 
 const DEFAULT_CONCURRENCY = 10;
+const MAX_WORKER_ERROR_LENGTH = 2_000;
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
@@ -71,11 +72,24 @@ function workerArgs(manifest) {
   ];
 }
 
+function workerFailure(errorLogPath, fallback) {
+  let detail = "";
+  try {
+    detail = readFileSync(errorLogPath, "utf8").replace(/\s+/g, " ").trim();
+  } catch {}
+  if (detail.length > MAX_WORKER_ERROR_LENGTH) {
+    detail = detail.slice(-MAX_WORKER_ERROR_LENGTH);
+  }
+  return `${detail || fallback} Error log: ${errorLogPath}`;
+}
+
 function runWorkerProcess({ manifest, transcript, memoryRoot, workerDir, piBin, timeoutMs }) {
   mkdirSync(workerDir, { recursive: true });
   const logPath = join(workerDir, "worker.log");
+  const errorLogPath = join(workerDir, "worker.error.log");
   appendFileSync(logPath, `session=${transcript.sessionId}\n`, "utf8");
   const logFd = openSync(logPath, "a");
+  const errorLogFd = openSync(errorLogPath, "a");
   const child = spawn(piBin, workerArgs(manifest), {
     cwd: memoryRoot,
     env: {
@@ -87,9 +101,10 @@ function runWorkerProcess({ manifest, transcript, memoryRoot, workerDir, piBin, 
       PI_DREAM_SESSION_ID: transcript.sessionId,
       PI_DREAM_TRANSCRIPT: transcript.path,
     },
-    stdio: ["pipe", logFd, logFd],
+    stdio: ["pipe", logFd, errorLogFd],
   });
   closeSync(logFd);
+  closeSync(errorLogFd);
   child.stdin.on("error", () => {});
   child.stdin.end(workerPrompt(readFileSync(transcript.path, "utf8")));
 
@@ -100,17 +115,28 @@ function runWorkerProcess({ manifest, transcript, memoryRoot, workerDir, piBin, 
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ ...result, logPath });
+      resolve({ ...result, logPath, errorLogPath });
     };
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
     }, timeoutMs);
-    child.on("error", (error) => finish({ ok: false, error: error.message }));
+    child.on("error", (error) => finish({
+      ok: false,
+      error: workerFailure(errorLogPath, error.message),
+    }));
     child.on("close", (code, signal) => {
-      if (timedOut) return finish({ ok: false, error: `Worker timed out after ${timeoutMs}ms.` });
+      if (timedOut) {
+        return finish({
+          ok: false,
+          error: workerFailure(errorLogPath, `Worker timed out after ${timeoutMs}ms.`),
+        });
+      }
       if (code === 0) return finish({ ok: true });
-      finish({ ok: false, error: `Worker exited with status ${code ?? signal ?? "unknown"}.` });
+      finish({
+        ok: false,
+        error: workerFailure(errorLogPath, `Worker exited with status ${code ?? signal ?? "unknown"}.`),
+      });
     });
   });
 }
@@ -120,6 +146,7 @@ function appendWorkerSummary(manifest, transcript, result, workerDir) {
     `\n## ${transcript.sessionId}`,
     `status=${result.ok ? "completed" : "failed"}`,
     `log=${join(workerDir, "worker.log")}`,
+    `error_log=${join(workerDir, "worker.error.log")}`,
     result.error ? `error=${result.error}` : "",
     "",
   ].join("\n"), "utf8");
