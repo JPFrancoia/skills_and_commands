@@ -84,6 +84,17 @@ Existing jobs can contain candidate Git repositories from the earlier implementa
 
 Set `dream.model` in `~/.pi/agent/settings.json` to a concrete `provider/model` value to select the worker model. If the value is absent, Pi Dream uses the active concrete model. If Pi Dream cannot select a concrete model, it stops and asks you to set `dream.model`.
 
+Workers start with `--no-extensions`. A worker cannot use a provider that an extension adds unless you load that extension. Set `dream.extensions` to a list of extension paths. The runner passes each path to the worker with `--extension`.
+
+```json
+"dream": {
+  "model": "claude-gateway/claude-opus-5-5",
+  "extensions": ["~/other_projects/coding-agent/clients/pi"]
+}
+```
+
+A path that starts with `~/` starts at your home folder. Pi Dream resolves other relative paths from `~/.pi/agent`. The job manifest stores the absolute paths. If the setting is missing, the worker gets no extra extension. Without the provider extension, the worker log shows `Model "<provider>/<model>" not found` and the job fails.
+
 Before the batch starts, Pi Dream shows the model, session count, working directory, and parallel worker count. It asks for confirmation because the batch sends session content to the selected provider. Pi Dream processes sessions from the current working directory only. Redaction covers common credential forms, but it cannot find every secret. Review the confirmation details before you approve a batch.
 
 Before each agent run, `before_agent_start` adds the memory folder and guidance to the system prompt. The system prompt contains instructions sent to the model. It also includes an index, a list of accepted memory paths and descriptions. This list includes at most 100 files and 12,000 characters. It does not include full file content. Pi Dream has no saved search database or meaning-based search.

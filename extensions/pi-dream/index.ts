@@ -17,6 +17,7 @@ import {
   type ExtensionContext,
   SessionManager,
   type SessionEntry,
+  getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import { listMarkdown } from "./worker-extension.ts";
 import {
@@ -49,6 +50,7 @@ type JobManifest = {
   candidateRoot: string;
   jobDir: string;
   workerExtension: string;
+  extensions?: string[];
   sessionIds: string[];
   transcripts: Array<{ sessionId: string; path: string; createdAt: string }>;
   base: CandidateManifest;
@@ -260,6 +262,14 @@ function selectModel(pi: ExtensionAPI, ctx: ExtensionContext): string | null {
   return null;
 }
 
+// Worker runs use --no-extensions, so providers from extensions must load explicitly.
+function workerExtensions(pi: ExtensionAPI): string[] {
+  const value = (pi.getSettings() as { dream?: { extensions?: unknown } }).dream?.extensions;
+  if (!Array.isArray(value)) return [];
+  return value.filter((path): path is string => typeof path === "string" && path.length > 0)
+    .map((path) => path === "~" || path.startsWith("~/") ? join(homedir(), path.slice(1)) : resolve(getAgentDir(), path));
+}
+
 function notify(ctx: ExtensionContext, message: string, level: "info" | "warning" | "error" = "info"): void {
   if (ctx.hasUI) ctx.ui.notify(message, level);
 }
@@ -331,6 +341,7 @@ async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
       version: 2, id, cwd: ctx.cwd, createdAt: new Date().toISOString(), model, concurrency,
       memoryRoot: memoryRoot(), candidateRoot, jobDir,
       workerExtension: join(dirname(fileURLToPath(import.meta.url)), "worker-extension.ts"),
+      extensions: workerExtensions(pi),
       sessionIds: transcripts.map((transcript) => transcript.sessionId), transcripts, base,
     };
     atomicJson(join(jobDir, "manifest.json"), manifest);
@@ -565,5 +576,5 @@ export const __test__ = {
   applyReviewBranch, buildMemoryIndex, buildTranscript, createCandidateSnapshot,
   initializeMemoryStore, loadProcessedSessions, markSessionsProcessed,
   parseBatchCount, redactTranscript, availableSessions, reconcileJobs, publishJob,
-  selectJob,
+  selectJob, workerExtensions,
 };
