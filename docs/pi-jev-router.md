@@ -24,7 +24,18 @@ These thresholds trigger a check, not a forced upgrade. Checks happen before a m
 
 The classifier prefers the routine level when the required capability is unclear. It uses Sol 6.1 for all medium-complexity work.
 
-Ordinary debugging, recurring errors, or user corrections alone do not justify Astra. Astra is for clearly exceptional reasoning needs or persistent failure after meaningfully different approaches. Persistent failure must show that stronger reasoning is needed. Productive long work, external waiting, or missing credentials alone do not justify Astra. Elapsed time is supporting context, not a deadline.
+Jev favors Astra for four code quality problems:
+
+- Review feedback identifies serious defects, missed requirements, or several missing edge cases.
+- Fixes repeat mistakes or introduce new defects.
+- Unnecessary complexity requires a simpler design.
+- The user identifies a reasoning mistake that requires a new approach.
+
+The substance of review feedback matters, not harsh wording alone. These problems do not require several failed approaches. Minor corrections, isolated test failures, and normal debugging stay on Sol.
+
+Astra also handles work that clearly needs stronger reasoning than routine tasks. Persistent failure can also justify Astra when stronger reasoning is needed.
+
+Productive long work, external waiting, or missing credentials alone do not justify Astra. Elapsed time is supporting context, not a deadline. This guidance does not guarantee that Jev selects Astra in a live run.
 
 During a continuation, the router changes to Astra when the classifier selects Astra. Otherwise, it keeps the current model and thinking level. It also keeps them when classification fails or returns an unusable result. Astra stays selected for the rest of the run. A new user request triggers classification for all levels.
 

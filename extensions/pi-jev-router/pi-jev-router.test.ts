@@ -178,12 +178,19 @@ assert.match(calls.at(-1)?.context.state.recentActivity as string, /same test st
 assert.match(calls.at(-1)?.context.questions.complexity.instructions ?? "", /untrusted evidence/);
 const complexity = calls.at(-1)!.context.questions.complexity;
 assert.match(complexity.instructions ?? "", /Prefer routine \(Sol\) when the required capability is unclear/);
-assert.match(complexity.instructions ?? "", /Ordinary debugging, recurring errors, or user corrections alone do not justify Astra/);
-assert.doesNotMatch(complexity.instructions ?? "", /Do not wait for the user|Choose routine only when/);
+assert.match(complexity.instructions ?? "", /Judge review findings by their substance, not harsh wording alone/);
+assert.match(complexity.instructions ?? "", /For code quality problems, select Astra without waiting for several failed approaches/);
+assert.match(complexity.instructions ?? "", /Keep minor corrections, isolated test failures, and normal debugging on Sol/);
+assert.match(complexity.instructions ?? "", /When `escalationOnly` is true, select Astra for those code quality problems or stalled work that needs stronger reasoning/);
+assert.doesNotMatch(complexity.instructions ?? "", /corrections alone do not justify Astra|only for clearly exceptional|meaningfully different approaches/);
 assert.match(complexity.criteria?.routine ?? "", /Medium-complexity work/);
 assert.match(complexity.criteria?.routine ?? "", /features, bug fixes, tests, refactors, analysis, research/);
-assert.match(complexity.criteria?.very_complex ?? "", /persistent failure after meaningfully different approaches/);
+assert.match(complexity.criteria?.routine ?? "", /normal debugging and minor corrections, not the code quality problems/);
 assert.match(complexity.criteria?.very_complex ?? "", /clearly exceed routine work/);
+assert.match(complexity.criteria?.very_complex ?? "", /serious defects, missed requirements, or several missing edge cases identified by review feedback/);
+assert.match(complexity.criteria?.very_complex ?? "", /repeated mistakes, fixes that introduce new defects, or unnecessary complexity that requires a simpler design/);
+assert.match(complexity.criteria?.very_complex ?? "", /When a user identifies a reasoning mistake that requires a new approach, select Astra/);
+assert.doesNotMatch(complexity.criteria?.very_complex ?? "", /meaningfully different approaches/);
 
 const sol = { model: model("gpt-6.1-sol"), thinkingLevel: "medium" as const };
 response = choice("routine");
