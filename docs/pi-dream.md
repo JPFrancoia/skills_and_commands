@@ -155,8 +155,8 @@ Workers start with `--no-extensions`. A worker cannot use a provider that an ext
 
 ```json
 "dream": {
-  "model": "claude-gateway/claude-opus-5-5",
-  "extensions": ["~/other_projects/coding-agent/clients/pi"]
+  "model": "my-provider/my-model",
+  "extensions": ["~/path/to/provider-extension"]
 }
 ```
 

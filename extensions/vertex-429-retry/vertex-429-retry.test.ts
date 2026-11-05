@@ -25,7 +25,7 @@ const pi = {
 vertex429Retry(pi);
 assert.ok(handler, "message_end handler registered");
 
-const errored = (errorMessage: string, provider = "claude-gateway") => ({
+const errored = (errorMessage: string, provider = "my-gateway") => ({
 	message: { role: "assistant", stopReason: "error", provider, errorMessage },
 });
 
