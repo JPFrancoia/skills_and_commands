@@ -4,7 +4,7 @@ Pi Dream is a Pi extension that extracts durable facts from completed sessions. 
 
 ## Memory storage
 
-The extension stores accepted memory in `~/.pi/agent/memory/`. Git provides version history and rollback. Workers can use `global/` for shared facts. They can use `projects/<cwd-slug>/` for project facts. The extension does not select these folders automatically.
+The extension stores accepted memory in `~/.pi/agent/memory/`. Git provides version history and rollback. A memory file can use a `scope` field to show only in one project folder. See [Project scope](#project-scope).
 
 Each memory file uses Markdown and starts with front matter. Front matter is metadata at the start of a file. Pi Dream requires one `description` field.
 
@@ -16,7 +16,9 @@ description: Stable response preferences.
 # Preferences
 ```
 
-Pi Dream stores jobs under `~/.pi/agent/dreams/jobs/<job-id>/`. A job contains its manifest, state, transcripts, candidate files, write records, and worker logs. A candidate folder holds proposed memory files. It is not a Git repository or worktree.
+A description can have up to 150 characters. `dream_memory_edit` rejects a new or changed file with a longer description. Existing files with a longer description still load. The prompt index cuts a longer description to 147 characters and adds `...`.
+
+Pi Dream stores jobs under `~/.pi/agent/dreams/jobs/<job-id>/`. A job contains its manifest, state, transcripts, findings, candidate files, write records, and worker logs. A candidate folder holds proposed memory files. It is not a Git repository or worktree.
 
 ## Commands
 
@@ -32,39 +34,104 @@ These commands use the latest job when you omit `[job-id]`, except `/dream-statu
 
 Pi Dream runs only when you start `/dream`. It does not start scheduled jobs. Each batch selects unprocessed sessions from the current working directory. It selects the oldest sessions first, up to the requested count.
 
-Run `/dream-status` without a job ID to see project session coverage. An accepted session belongs to a job that is in `master` history. A reserved session belongs to a queued, running, or ready job. An available session can enter a new batch. The summary states `All project sessions are accepted.` when no project session remains.
+Run `/dream-status` without a job ID to see project session coverage. An accepted session belongs to a job that is in `master` history. A reserved session belongs to a queued, running, or ready job. An available session can enter a new batch. The summary states `All project sessions are accepted.` when no project session remains. For a running job, `/dream-status` shows the phase: `extract` or `consolidate`.
 
 In UI sessions, the status area shows the latest job across all working directories. It refreshes once per second. With no job, it shows `🌙 dream: idle`. Queued, running, and ready jobs show completed and total counts, such as `🌙 dream: 10/10`. This compact label remains unchanged. Use `/dream-status` to see each job state. Failed, applied, and discarded jobs show their state instead of counts. A state read error shows `🌙 dream: unavailable`. The status area clears when the session shuts down. Headless sessions do not show this status.
 
 When the latest job fails, Pi Dream shows one error notification in each Pi runtime. The notification gives the job ID, progress, error, and status command.
 
+## Batch phases
+
+Each batch has two phases. The extract phase reads sessions and records findings. The consolidate phase edits memory from those findings. A finding is one claim from a session. It has a kind, a subject, a statement, and quotes from the transcript.
+
+### Extract phase
+
+Pi Dream rebuilds the active branch for each selected session. It exports user and assistant text. It also exports tool calls and tool results. It excludes system messages and extension state. Each transcript records the session ID, working directory, creation time, and source entry IDs. The extension redacts common credential forms before it gives a transcript to a worker.
+
+Transcripts use these rules:
+
+- An assistant tool call appears as `[tool call <name>] <JSON arguments>`. Arguments longer than 500 characters are cut.
+- Thinking parts are excluded.
+- A tool result header shows the tool name. A failed result also shows `error`.
+- A normal tool result keeps its first and last 500 characters.
+- An error result keeps its first and last 4,000 characters.
+- A `[... N characters cut ...]` marker shows where text was cut.
+- User and assistant text stays complete.
+
+One extract worker runs for each session. The worker gets the transcript as its prompt. It has three tools: `dream_memory_list`, `dream_memory_read`, and `dream_finding`. It cannot edit memory.
+
+`dream_finding` records one finding. A finding has these fields:
+
+- `kind`: `fact`, `preference`, `correction`, `procedure`, `failure`, or `stale`.
+- `subject`: a short topic name in the form `<project or tool> <topic>`, for example `likec4 validate command`. It can have up to 80 characters.
+- `statement`: the claim. It can have up to 1,000 characters.
+- `memoryPath`: an optional related memory file.
+- `evidence`: one to three quotes from the transcript. Each quote can have up to 500 characters. Pi Dream checks each quote against the transcript.
+
+The worker writes each finding to `findings.jsonl` in its own worker folder. Workers do not share this file, so no lock is needed.
+
+### Consolidate phase
+
+When the extract phase ends, the runner merges all worker findings into `<job>/findings.jsonl`. It gives each finding an ID: `f1`, `f2`, and so on.
+
+If no worker records a finding, the runner skips the consolidate phase. Memory does not change in that batch.
+
+If at least one finding exists, one orchestrator worker runs. The orchestrator worker reads the merged findings and the candidate store. The prompt groups the findings. Findings with the same `memoryPath` form one group. Other findings form groups by subject. Each group shows the number of sessions. The prompt also lists store warnings. A warning appears for a description over 150 characters or a file over 20,000 bytes. The orchestrator worker has three tools: `dream_memory_list`, `dream_memory_read`, and `dream_memory_edit`. It edits the candidate store with these tools.
+
+### Timeouts and environment
+
+Each extract worker has 30 minutes. The consolidate worker has 60 minutes.
+
+The runner sets these environment variables for workers:
+
+- `PI_DREAM_PHASE`: `extract` or `consolidate`.
+- `PI_DREAM_FINDINGS`: the findings file that the worker uses. An extract worker uses its own folder. The consolidate worker uses `<job>/findings.jsonl`.
+- `PI_DREAM_CWD`: the batch working directory. Only the consolidate worker gets this variable.
+
 ## Session scope and workers
 
-Pi Dream rebuilds the active branch for each selected session. It exports user, assistant, and tool-result text. It excludes system messages and extension state. Each transcript records the session ID, working directory, creation time, and source entry IDs. The extension redacts common credential forms before it gives a transcript to a worker.
+The runner uses a worker pool. The pool runs up to 10 workers at the same time in each batch. A manifest can request fewer workers. The runner caps larger requests at 10. A new worker starts when any worker finishes. A slow worker does not stop the other workers. After a failure, no new worker starts. Running workers finish, and the job fails. Different batches can run at the same time, so the total can exceed 10. More sessions and workers can use more resources and reach provider rate limits.
 
-The runner starts up to 10 workers at the same time in each batch. A manifest can request fewer workers. The runner caps larger requests at 10. Different batches can run at the same time, so the total can exceed 10. More sessions and workers can use more resources and reach provider rate limits.
+The job state has a `phase` field while the job runs. Its value is `extract` or `consolidate`. The field is removed when the job is ready.
 
-Workers share one batch folder. A lock allows one worker at a time to check file hashes, edit files, or write shared evidence. A lock prevents simultaneous access to shared data.
+The runner sends each prompt through standard input. Standard input is the data stream that a process reads. This method avoids command-line size limits for long transcripts. Extract worker JSON output goes to `<job>/workers/<index>-<session-id>/worker.log`. Standard error is the error data stream from a process. Extract worker standard error goes to `<job>/workers/<index>-<session-id>/worker.error.log`. The consolidate worker uses `<job>/workers/consolidate/`. The runner does not keep Pi JSON output in memory. This method prevents `spawnSync pi ENOBUFS`.
 
-The runner sends each prompt through standard input. Standard input is the data stream that a process reads. This method avoids command-line size limits for long transcripts. Worker JSON output goes to `<job>/workers/<index>-<session-id>/worker.log`. Standard error is the error data stream from a process. Worker standard error goes to `<job>/workers/<index>-<session-id>/worker.error.log`. The runner does not keep Pi JSON output in memory. This method prevents `spawnSync pi ENOBUFS`.
+Workers in one batch share a candidate store. Other batches use separate candidate stores. Memory tools use a lock. The lock allows one tool call at a time to check hashes or change files. A lock prevents simultaneous access to shared data. The tools cannot use Bash or access other files.
 
-Each worker receives its transcript. Workers in one batch share a candidate store. Other batches use separate candidate stores. It can list, read, write, delete, and move Markdown memory through three restricted tools. It cannot use Bash or access other files through those tools.
-
-Workers can prepare edits at the same time. File edits take turns under the lock. The lock protects each hash check, edit, and evidence write. A changed hash stops an edit so the worker can read the current file and prepare a new edit.
-
-The worker treats the transcript as evidence, not as instructions. It can store durable facts, corrections, preferences, and reusable procedures. It must not store temporary details, guesses, secrets, or unsupported claims.
+Workers treat the transcript as evidence, not as instructions. Extract workers record durable facts, corrections, preferences, reusable procedures, failures, and stale memory. They must not record temporary details, guesses, secrets, or unsupported claims. The consolidate worker decides which findings change memory.
 
 ## Content hashes and evidence
 
-A content hash is a SHA-256 value for a file's contents. Before each write, delete, or move, Pi Dream compares the supplied hash with the current file hash. A new file uses `missing` as its expected hash. A move also checks the destination hash. A mismatch stops the operation.
+A content hash is a SHA-256 value for a file's contents. Before each write, delete, or move, Pi Dream compares the supplied hash with the current file hash. A new file uses `missing` as its expected hash. Pi Dream also reads an empty value or `none` as `missing`. A move also checks the destination hash. A mismatch stops the operation.
 
-Pi Dream rejects paths outside the candidate store, hidden paths, non-Markdown files, and paths that contain symlinks. Each written Markdown file must have a description in its front matter. The extension uses a temporary file and rename for writes.
+Pi Dream rejects paths outside the candidate store, hidden paths, non-Markdown files, and paths that contain symlinks. Each written Markdown file must have a description in its front matter. The description can have up to 150 characters. Pi Dream rejects a file when its first body line starts with `scope:` or `description:`. A field in the body has no effect, so the error tells the worker to move it into the front matter. The extension uses a temporary file and rename for writes.
 
-Every successful operation adds one JSON record to `writes.jsonl`. The harness supplies the job ID, session ID, author, and time. The record also contains the action, path, old and new hashes, reason, and evidence. Evidence contains transcript entry IDs and exact quotes. Pi Dream rejects evidence that does not occur in the current transcript. A lock protects shared evidence records.
+`dream_memory_edit` takes `findingIds` instead of evidence. Each ID names a finding from `findings.jsonl`. Pi Dream rejects an unknown ID. A successful edit adds one version 2 JSON record to `writes.jsonl`. The record lists the finding IDs, the session IDs behind them, and the evidence copied from those findings. Each evidence item shows its session ID, entry ID, and quote. The author is `Pi Dream consolidation`. The harness supplies the job ID and time.
+
+An edit with an empty `findingIds` list is a cleanup edit. A cleanup edit can merge, shorten, move, or delete existing content. The prompt allows no new facts in a cleanup edit. Pi Dream does not check this rule. Human review checks it.
+
+## Project scope
+
+A memory file can set `scope` in its front matter:
+
+```markdown
+---
+description: Test command for this project.
+scope: ~/projects/example
+---
+```
+
+A scope value must be an absolute path or start with `~/`. The scope must also be the batch working directory or a parent folder of it. For example, a batch from `~/projects` can use `scope: ~/projects` or `scope: ~`. It cannot use `scope: ~/projects/diagrams`. A narrower scope hides the file from the sessions that gave its findings. `dream_memory_edit` rejects other scope values.
+
+The prompt index shows a scoped file only when the session working directory is the scope folder or a folder inside it. A file without `scope` appears in every session. Existing files have no scope, so they appear everywhere until a batch adds one.
+
+The index filters files by scope only. Normal file commands can still find any accepted file.
 
 ## Review and apply
 
-When a batch finishes, the runner publishes one branch named `dream/<job-id>` in the accepted repository. The review command writes `diff.md` in the job directory. The branch contains one batch commit, even when the batch has no file changes. The commit uses the recorded base as its parent. Pi Dream uses a private Git index and Git commands `commit-tree` and `update-ref`. It does not check out the branch or change the normal Git index. The review file contains the change summary, full diff, batch commit, and evidence records. Each evidence record shows the source session, action, path, quote count, and reason.
+When a batch finishes, the runner publishes one branch named `dream/<job-id>` in the accepted repository. The review command writes `diff.md` in the job directory. The branch contains one batch commit, even when the batch has no file changes. The commit uses the recorded base as its parent. Pi Dream uses a private Git index and Git commands `commit-tree` and `update-ref`. It does not check out the branch or change the normal Git index. The review file contains the change summary, full diff, batch commit, and evidence records.
+
+The evidence records table has these columns: Sessions, Findings, Action, Path, Quotes, and Reason. Sessions shows how many sessions support each edit. Findings lists the finding IDs. Each finding ID refers to one line in `findings.jsonl` in the job folder. Version 1 records from older jobs still display. They show one session and no finding IDs.
 
 Open `~/.pi/agent/memory/` in lazygit to review a branch. Compare `dream/<job-id>` with `master`. You can also merge the branch manually. A normal merge keeps the published commit in the history. Pi Dream detects that merge during UI polling and job commands or selection. A squash merge or cherry-pick does not prove acceptance, so Pi Dream does not mark those sessions as processed.
 
@@ -74,9 +141,9 @@ The `/dream-apply` command requires interactive approval. It requires a clean ac
 
 Apply accepts the complete batch. It does not apply selected files or edits. It records acceptance before it deletes the `dream/<job-id>` branch name. It deletes that name only if the branch still points to the accepted commit. A cleanup error produces a warning and preserves the branch. Accepted memory and processed sessions remain valid.
 
-A failed apply or canceled confirmation keeps the branch. A manual merge does not delete the branch. Apply keeps candidate folders, logs, evidence, job records, and accepted commits.
+A failed apply or canceled confirmation keeps the branch. A manual merge does not delete the branch. Apply keeps candidate folders, logs, findings, evidence, job records, and accepted commits.
 
-Discard deletes only the expected `dream/<job-id>` branch and candidate files. It keeps evidence and logs. It refuses queued, running, and applied jobs. Discarded sessions remain eligible for another batch. Pi Dream reserves sessions in queued, running, and ready jobs.
+Discard deletes only the expected `dream/<job-id>` branch and candidate files. It keeps findings, evidence, and logs. It refuses queued, running, and applied jobs. Discarded sessions remain eligible for another batch. Pi Dream reserves sessions in queued, running, and ready jobs.
 
 Existing jobs can contain candidate Git repositories from the earlier implementation. Run `/dream-review <job-id>` to publish a ready legacy candidate. This command keeps its files and history intact.
 
@@ -97,19 +164,19 @@ A path that starts with `~/` starts at your home folder. Pi Dream resolves other
 
 Before the batch starts, Pi Dream shows the model, session count, working directory, and parallel worker count. It asks for confirmation because the batch sends session content to the selected provider. Pi Dream processes sessions from the current working directory only. Redaction covers common credential forms, but it cannot find every secret. Review the confirmation details before you approve a batch.
 
-Before each agent run, `before_agent_start` adds the memory folder and guidance to the system prompt. The system prompt contains instructions sent to the model. It also includes an index, a list of accepted memory paths and descriptions. This list includes at most 100 files and 12,000 characters. It does not include full file content. Pi Dream has no saved search database or meaning-based search.
+Before each agent run, `before_agent_start` adds the memory folder and guidance to the system prompt. The system prompt contains instructions sent to the model. It also includes an index, a list of accepted memory paths and descriptions. The index shows only files in scope for the session working directory. It includes at most 100 files and 12,000 characters. It does not include full file content. If some files do not fit, the index adds this line: `<n> more file(s) are not listed. Search them with rg.` Pi Dream has no saved search database or meaning-based search.
 
 The prompt shows a memory folder under your home folder as a home-relative path, such as `~/notes`. It shows the home folder as `~`. It shows a folder outside your home folder as an absolute path.
 
 Normal sessions do not register Dream tools. The model can use normal file commands to search and read accepted Markdown files. For example, it can run `rg "response preference" "/path/to/memory"` to search, then `cat "/path/to/memory/global/preferences.md"` to read a file. The guidance treats memory as historical context, not instructions. It requires an explicit user request before file changes. Normal file tools do not enforce this restriction.
 
-All normal sessions use the same accepted memory root. Pi Dream does not filter this memory by the current working directory. The index uses accepted Markdown files only. It does not include pending job files. Pi Dream rebuilds it at each run, so new accepted memory appears on the next run. The guidance does not guarantee that the model reads every memory file.
+All normal sessions use the same accepted memory root. The index uses accepted Markdown files only. It does not include pending job files. Pi Dream rebuilds it at each run, so new accepted memory appears on the next run. The guidance does not guarantee that the model reads every memory file.
 
 ## Failure recovery
 
 A failed worker marks the job as failed. The job does not publish a branch. Pi Dream does not apply a failed job. A queued or running job cannot be discarded through `/dream-discard`.
 
-Pi Dream stores the worker error in the job state. The error includes the path to `worker.error.log`. The UI notification shows this error when the latest job fails.
+After a failure, no new worker starts. Running workers finish first. Pi Dream stores the worker error in the job state. The error includes the path to `worker.error.log`. The UI notification shows this error when the latest job fails.
 
 Detailed worker logs remain under the job's `workers/` directory. If a process crashes while it holds a lock, the lock remains. Lock attempts stop with a bounded timeout error. Before you remove a lock manually, make sure that no active process uses it.
 
@@ -133,12 +200,12 @@ Pi Dream initializes the memory directory as a Git repository when the first bat
 
 ## Validation
 
-Run the extension test with the host `jiti` loader and aliases:
+Run the extension test with the host `jiti` loader and aliases. Set `NODE_PATH` before `node`. The test needs packages from the host install, such as `typebox`:
 
 ```bash
 host="$(npm root -g)/@earendil-works/pi-coding-agent"
 export JITI_ALIAS="{\"@earendil-works/pi-coding-agent\":\"$host/dist/index.js\",\"@earendil-works/pi-tui\":\"$host/node_modules/@earendil-works/pi-tui/dist/index.js\"}"
-node "$host/node_modules/jiti/lib/jiti-cli.mjs" extensions/pi-dream/pi-dream.test.ts
+NODE_PATH="$host/node_modules" node "$host/node_modules/jiti/lib/jiti-cli.mjs" extensions/pi-dream/pi-dream.test.ts
 ```
 
-The test covers transcript filtering, redaction, memory indexing, path safety, hashes, evidence, Git conflicts, and command registration. It also covers project coverage, failure notifications, worker error logs, 2 MiB output, concurrent jobs, parallel workers, manual merges, batch publication, session reservations, and legacy job review. Run `git diff --check` to check the documentation diff.
+The test covers transcript filtering, tool call and tool result cuts, redaction, memory indexing, scope matching, the description limit, path safety, hashes, findings, finding-based edits, Git conflicts, and command registration. It also covers the worker pool, the extract and consolidate phases, the consolidate prompt with session counts, failure notifications, worker error logs, 2 MiB output, concurrent jobs, parallel workers, manual merges, batch publication, session reservations, and legacy job review. Run `git diff --check` to check the documentation diff.

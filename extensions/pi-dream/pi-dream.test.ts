@@ -95,6 +95,31 @@ try {
     messageEntry("assistant-1", "assistant", "I will use short replies."),
     messageEntry("tool-1", "toolResult", "Result with sk-test-secret"),
     {
+      type: "message", id: "assistant-2", parentId: "tool-1", timestamp: "2026-11-02T12:00:00.000Z",
+      message: {
+        role: "assistant", timestamp: 0,
+        content: [
+          { type: "thinking", thinking: "Private reasoning" },
+          { type: "toolCall", id: "call-1", name: "bash", arguments: { command: "npm test" } },
+          { type: "toolCall", id: "call-2", name: "write", arguments: { content: "w".repeat(3_000) } },
+        ],
+      },
+    } as unknown as SessionEntry,
+    {
+      type: "message", id: "tool-2", parentId: "assistant-2", timestamp: "2026-11-02T12:00:00.000Z",
+      message: {
+        role: "toolResult", toolCallId: "call-1", toolName: "bash", isError: false, timestamp: 0,
+        content: [{ type: "text", text: `HEAD${"o".repeat(5_000)}TAIL` }],
+      },
+    } as unknown as SessionEntry,
+    {
+      type: "message", id: "tool-3", parentId: "tool-2", timestamp: "2026-11-02T12:00:00.000Z",
+      message: {
+        role: "toolResult", toolCallId: "call-2", toolName: "write", isError: true, timestamp: 0,
+        content: [{ type: "text", text: `ERRSTART${"e".repeat(10_000)}ERREND` }],
+      },
+    } as unknown as SessionEntry,
+    {
       type: "custom",
       id: "custom-1",
       parentId: "tool-1",
@@ -115,6 +140,15 @@ try {
   assert.doesNotMatch(transcript, /Private system text/);
   assert.doesNotMatch(transcript, /do not export/);
   assert.doesNotMatch(transcript, /secret-value|sk-test-secret/);
+  assert.match(transcript, /\[tool call bash\] \{"command":"npm test"\}/);
+  assert.match(transcript, /\[tool call write\] \{"content":"w+ \[\.\.\. cut\]/);
+  assert.doesNotMatch(transcript, /Private reasoning/);
+  assert.match(transcript, /## entry tool-2 \| toolResult \| bash\nHEAD/);
+  assert.match(transcript, /\]\no+TAIL\n/);
+  assert.match(transcript, /\[\.\.\. 4008 characters cut \.\.\.\]/);
+  assert.match(transcript, /## entry tool-3 \| toolResult \| write \| error\nERRSTART/);
+  assert.match(transcript, /\[\.\.\. 2014 characters cut \.\.\.\]\ne+ERREND/);
+  assert.equal(dreamTest.clipMiddle("short", 10), "short");
 
   mkdirSync(join(memoryRoot, "global"), { recursive: true });
   writeFileSync(
@@ -127,8 +161,32 @@ try {
   assert.match(index, /Stable response preferences/);
   assert.doesNotMatch(index, /Use direct answers/);
   assert.doesNotMatch(index, /invalid\.md/);
-  assert.equal(dreamTest.buildMemoryIndex(memoryRoot, 0, 4_000), "No accepted dream memory exists.");
-  assert.equal(dreamTest.buildMemoryIndex(memoryRoot, 20, 28), "Accepted dream memory files:");
+  assert.equal(
+    dreamTest.buildMemoryIndex(memoryRoot, 0, 4_000),
+    "Accepted dream memory files:\n1 more file(s) are not listed. Search them with rg.",
+  );
+  assert.equal(
+    dreamTest.buildMemoryIndex(memoryRoot, 20, 28),
+    "Accepted dream memory files:\n1 more file(s) are not listed. Search them with rg.",
+  );
+  writeFileSync(
+    join(memoryRoot, "global", "scoped.md"),
+    "---\ndescription: Project only.\nscope: /tmp/project\n---\n\nScoped fact.\n",
+  );
+  writeFileSync(
+    join(memoryRoot, "global", "long.md"),
+    `---\ndescription: ${"d".repeat(400)}\n---\n\nLong description.\n`,
+  );
+  assert.match(dreamTest.buildMemoryIndex(memoryRoot, 20, 4_000, "/tmp/project/sub"), /scoped\.md: Project only/);
+  assert.match(dreamTest.buildMemoryIndex(memoryRoot, 20, 4_000, "/tmp/project"), /scoped\.md/);
+  assert.doesNotMatch(dreamTest.buildMemoryIndex(memoryRoot, 20, 4_000, "/tmp/projectile"), /scoped\.md/);
+  assert.doesNotMatch(dreamTest.buildMemoryIndex(memoryRoot, 20, 4_000, "/tmp/other"), /scoped\.md/);
+  assert.match(dreamTest.buildMemoryIndex(memoryRoot, 20, 4_000, "/tmp/other"), new RegExp(`long\\.md: ${"d".repeat(147)}\\.\\.\\.\\n`));
+  assert.equal(dreamTest.scopeMatches("~/work", join(homedir(), "work", "repo")), true);
+  assert.equal(dreamTest.scopeMatches("~/work", join(homedir(), "workshop")), false);
+  assert.equal(dreamTest.scopeMatches(undefined, "/anywhere"), true);
+  rmSync(join(memoryRoot, "global", "scoped.md"));
+  rmSync(join(memoryRoot, "global", "long.md"));
 
   assert.equal(
     workerTest.resolveMemoryPath(memoryRoot, "global/preferences.md"),
@@ -155,12 +213,41 @@ try {
     "## entry user-1 | user",
     "Use short replies.",
   ].join("\n");
+  const findingsPath = join(jobDir, "worker-findings.jsonl");
+  const findingContext = { memoryRoot, sessionId: "session-1", transcript: evidenceTranscript, findingsPath };
+  const finding = workerTest.appendFinding(findingContext, {
+    kind: "preference", subject: "answer style", statement: "The user wants short replies.",
+    memoryPath: "global/answers.md",
+    evidence: [{ entryId: "user-1", quote: "Use short replies." }],
+  });
+  assert.equal(finding.sessionId, "session-1");
+  assert.deepEqual(workerTest.readFindings(findingsPath).map((item) => item.subject), ["answer style"]);
+  assert.throws(() => workerTest.appendFinding(findingContext, {
+    kind: "fact", subject: "x", statement: "Unsupported.",
+    evidence: [{ entryId: "user-1", quote: "A quote that is not present." }],
+  }), /evidence quote/);
+  assert.throws(() => workerTest.appendFinding(findingContext, {
+    kind: "fact", subject: "x", statement: "Wrong entry.",
+    evidence: [{ entryId: "user-9", quote: "Use short replies." }],
+  }), /entry user-9/);
+  assert.throws(() => workerTest.appendFinding(findingContext, {
+    kind: "guess" as "fact", subject: "x", statement: "Bad kind.",
+    evidence: [{ entryId: "user-1", quote: "Use short replies." }],
+  }), /kind is invalid/);
+  assert.throws(() => workerTest.appendFinding(findingContext, {
+    kind: "fact", subject: "s".repeat(81), statement: "Long subject.",
+    evidence: [{ entryId: "user-1", quote: "Use short replies." }],
+  }), /subject/);
+  assert.throws(() => workerTest.appendFinding(findingContext, {
+    kind: "fact", subject: "x", statement: "Escaping path.", memoryPath: "../outside.md",
+    evidence: [{ entryId: "user-1", quote: "Use short replies." }],
+  }), /outside the memory store/);
+  assert.equal(workerTest.readFindings(findingsPath).length, 1);
   const editContext = {
     memoryRoot,
     jobDir,
     jobId: "job-1",
-    sessionId: "session-1",
-    transcript: evidenceTranscript,
+    findings: [{ id: "f1", ...finding }],
     now: () => "2026-11-02T12:30:00.000Z",
   };
   const created = await workerTest.applyMemoryEdit(editContext, {
@@ -170,13 +257,15 @@ try {
     content:
       "---\ndescription: Stable answer style.\n---\n\n# Answer style\n\nUse short replies.\n",
     reason: "Keep the explicit response preference.",
-    evidence: [{ entryId: "user-1", quote: "Use short replies." }],
+    findingIds: ["f1"],
   });
   assert.equal(created.path, "global/answers.md");
   assert.equal(created.oldHash, "missing");
   assert.notEqual(created.newHash, "missing");
-  assert.match(readFileSync(join(jobDir, "writes.jsonl"), "utf8"), /session-1/);
-  assert.match(readFileSync(join(jobDir, "writes.jsonl"), "utf8"), /user-1/);
+  const createdRecord = JSON.parse(readFileSync(join(jobDir, "writes.jsonl"), "utf8").trim());
+  assert.deepEqual(createdRecord.findingIds, ["f1"]);
+  assert.deepEqual(createdRecord.sessionIds, ["session-1"]);
+  assert.deepEqual(createdRecord.evidence, [{ sessionId: "session-1", entryId: "user-1", quote: "Use short replies." }]);
 
   await assert.rejects(
     workerTest.applyMemoryEdit(editContext, {
@@ -186,7 +275,7 @@ try {
       content:
         "---\ndescription: Stable answer style.\n---\n\n# Answer style\n\nUse direct replies.\n",
       reason: "Change the preference.",
-      evidence: [{ entryId: "user-1", quote: "Use short replies." }],
+      findingIds: ["f1"],
     }),
     /hash changed/,
   );
@@ -197,11 +286,92 @@ try {
       expectedHash: created.newHash,
       content:
         "---\ndescription: Stable answer style.\n---\n\n# Answer style\n\nUse direct replies.\n",
-      reason: "Use unsupported evidence.",
-      evidence: [{ entryId: "user-1", quote: "A quote that is not present." }],
+      reason: "Use an unknown finding.",
+      findingIds: ["f9"],
     }),
-    /evidence quote/,
+    /finding f9 does not exist/,
   );
+  await assert.rejects(
+    workerTest.applyMemoryEdit(editContext, {
+      action: "write",
+      path: "global/answers.md",
+      expectedHash: created.newHash,
+      content: `---\ndescription: ${"d".repeat(151)}\n---\n\nToo long.\n`,
+      reason: "Use a long description.",
+      findingIds: [],
+    }),
+    /longer than 150 characters/,
+  );
+  await assert.rejects(
+    workerTest.applyMemoryEdit(editContext, {
+      action: "write",
+      path: "global/answers.md",
+      expectedHash: created.newHash,
+      content: "---\ndescription: Relative scope.\nscope: projects/x\n---\n\nBad scope.\n",
+      reason: "Use a relative scope.",
+      findingIds: [],
+    }),
+    /scope must be an absolute path/,
+  );
+  await assert.rejects(
+    workerTest.applyMemoryEdit(editContext, {
+      action: "write",
+      path: "global/answers.md",
+      expectedHash: created.newHash,
+      content: "---\ndescription: Body scope.\n---\n\nscope: ~/work\n\nBody scope.\n",
+      reason: "Put scope in the body.",
+      findingIds: [],
+    }),
+    /below the front matter/,
+  );
+  for (const expectedHash of ["", "none"]) {
+    const fresh = await workerTest.applyMemoryEdit(editContext, {
+      action: "write",
+      path: `global/new-${expectedHash || "empty"}.md`,
+      expectedHash,
+      content: "---\ndescription: New file.\n---\n\nNew.\n",
+      reason: "Create a file without the missing keyword.",
+      findingIds: [],
+    });
+    assert.equal(fresh.oldHash, "missing");
+    rmSync(join(memoryRoot, fresh.path));
+  }
+  await assert.rejects(
+    workerTest.applyMemoryEdit(editContext, {
+      action: "write",
+      path: "global/answers.md",
+      expectedHash: "none",
+      content: "---\ndescription: Overwrite.\n---\n\nOverwrite.\n",
+      reason: "Overwrite an existing file without its hash.",
+      findingIds: [],
+    }),
+    /hash changed/,
+  );
+  await assert.rejects(
+    workerTest.applyMemoryEdit({ ...editContext, cwd: join(homedir(), "work") }, {
+      action: "write",
+      path: "global/answers.md",
+      expectedHash: created.newHash,
+      content: "---\ndescription: Too narrow.\nscope: ~/work/sub\n---\n\nNarrow scope.\n",
+      reason: "Use a scope below the batch folder.",
+      findingIds: [],
+    }),
+    /does not contain the batch folder/,
+  );
+  const scopedEdit = await workerTest.applyMemoryEdit({ ...editContext, cwd: join(homedir(), "work", "repo") }, {
+    action: "write",
+    path: "global/answers.md",
+    expectedHash: created.newHash,
+    content: "---\ndescription: Stable answer style.\nscope: ~/work\n---\n\n# Answer style\n\nUse short replies.\n",
+    reason: "Limit the file to one project.",
+    findingIds: [],
+  });
+  assert.deepEqual(
+    workerTest.listMarkdown(memoryRoot).find((entry) => entry.path === "global/answers.md")?.scope,
+    "~/work",
+  );
+  const cleanupRecord = JSON.parse(readFileSync(join(jobDir, "writes.jsonl"), "utf8").trim().split("\n").at(-1)!);
+  assert.deepEqual([cleanupRecord.findingIds, cleanupRecord.sessionIds, cleanupRecord.evidence], [[], [], []]);
 
   const outside = join(tempRoot, "outside");
   mkdirSync(outside, { recursive: true });
@@ -214,14 +384,12 @@ try {
       content:
         "---\ndescription: Invalid escaped file.\n---\n\n# Escaped\n",
       reason: "Test the boundary.",
-      evidence: [{ entryId: "user-1", quote: "Use short replies." }],
+      findingIds: ["f1"],
     }),
     /symlink/,
   );
 
-  const sourceHash = workerTest.sha256File(
-    join(memoryRoot, "global", "answers.md"),
-  );
+  const sourceHash = scopedEdit.newHash;
   const moved = await workerTest.applyMemoryEdit(editContext, {
     action: "move",
     path: "global/answers.md",
@@ -229,7 +397,7 @@ try {
     destination: "global/style.md",
     expectedDestinationHash: "missing",
     reason: "Use a clearer file name.",
-    evidence: [{ entryId: "user-1", quote: "Use short replies." }],
+    findingIds: ["f1"],
   });
   assert.equal(moved.path, "global/style.md");
   assert.equal(existsSync(join(memoryRoot, "global", "answers.md")), false);
@@ -240,7 +408,7 @@ try {
     path: "global/style.md",
     expectedHash: moved.newHash,
     reason: "Remove a duplicate file.",
-    evidence: [{ entryId: "user-1", quote: "Use short replies." }],
+    findingIds: ["f1"],
   });
   assert.equal(existsSync(join(memoryRoot, "global", "style.md")), false);
 
@@ -495,6 +663,7 @@ try {
     },
   } as unknown as ExtensionAPI);
   assert.deepEqual(workerTools.sort(), [
+    "dream_finding",
     "dream_memory_edit",
     "dream_memory_list",
     "dream_memory_read",
@@ -759,11 +928,96 @@ try {
     conflictSessions.map((item) => item.sessionId).sort(),
   );
 
+  const poolStarts: number[] = [];
+  const poolFailure = await runnerTest.runPool([30, 5, 5, 5, 5], 2, async (delay: number, index: number) => {
+    poolStarts.push(index);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    return { ok: index !== 2, error: `failed ${index}` };
+  });
+  assert.equal(poolFailure.error, "failed 2");
+  assert.deepEqual(poolStarts.slice(0, 3), [0, 1, 2], "a slow worker does not block the next worker");
+  assert.ok(!poolStarts.includes(4), "no new worker starts after a failure");
+
+  const phaseLive = join(tempRoot, "phase-live");
+  const phaseJob = join(tempRoot, "phase-job");
+  const phaseCandidate = join(phaseJob, "candidate");
+  dreamTest.initializeMemoryStore(phaseLive);
+  const phaseBase = dreamTest.createCandidateSnapshot(phaseLive, phaseCandidate);
+  mkdirSync(join(phaseJob, "transcripts"), { recursive: true });
+  const phaseSessions = ["phase-a", "phase-b", "phase-c"].map((sessionId) => {
+    const path = join(phaseJob, "transcripts", `${sessionId}.md`);
+    writeFileSync(path, `## entry user-1 | user\nRemember ${sessionId}.\n`);
+    return { sessionId, path, createdAt: "2026-11-02T12:00:00.000Z" };
+  });
+  const phasePi = join(tempRoot, "phase-pi.sh");
+  writeFileSync(phasePi, [
+    "#!/bin/sh",
+    'if [ "$PI_DREAM_PHASE" = "consolidate" ]; then',
+    '  cat > "$PI_DREAM_JOB_DIR/consolidate-prompt.md"',
+    '  printf "%s\\n" "$*" > "$PI_DREAM_JOB_DIR/consolidate-args"',
+    '  cp "$PI_DREAM_FINDINGS" "$PI_DREAM_JOB_DIR/seen-findings.jsonl"',
+    '  printf "%s" "$PI_DREAM_CWD" > "$PI_DREAM_JOB_DIR/consolidate-cwd"',
+    '  printf -- "---\\ndescription: Shared subject.\\n---\\n\\nMerged.\\n" > "$PI_DREAM_MEMORY_ROOT/merged.md"',
+    "  exit 0",
+    "fi",
+    "cat >/dev/null",
+    'printf "%s\\n" "$*" > "$PI_DREAM_JOB_DIR/extract-args"',
+    'if [ "$PI_DREAM_SESSION_ID" != "phase-c" ]; then',
+    '  printf "{\\"sessionId\\":\\"%s\\",\\"kind\\":\\"fact\\",\\"subject\\":\\"Shared Subject\\",\\"statement\\":\\"Fact from %s.\\",\\"evidence\\":[{\\"entryId\\":\\"user-1\\",\\"quote\\":\\"Remember %s.\\"}]}\\n" "$PI_DREAM_SESSION_ID" "$PI_DREAM_SESSION_ID" "$PI_DREAM_SESSION_ID" > "$PI_DREAM_FINDINGS"',
+    "fi",
+  ].join("\n"));
+  chmodSync(phasePi, 0o755);
+  const phaseManifest = join(phaseJob, "manifest.json");
+  writeFileSync(phaseManifest, JSON.stringify({
+    version: 2, id: "phase-job", cwd: tempRoot, model: "test/model", concurrency: 3,
+    memoryRoot: phaseLive, candidateRoot: phaseCandidate, jobDir: phaseJob,
+    workerExtension: join(tempRoot, "worker-extension.ts"),
+    sessionIds: phaseSessions.map((item) => item.sessionId), transcripts: phaseSessions, base: phaseBase,
+  }));
+  writeFileSync(join(phaseJob, "state.json"), JSON.stringify({ id: "phase-job", status: "queued", completed: 0, total: 3 }));
+  assert.deepEqual(await runJob(phaseManifest, { piBin: phasePi, timeoutMs: 5_000 }), { status: "ready" });
+  const merged = readFileSync(join(phaseJob, "findings.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(merged.map((item) => [item.id, item.sessionId]), [["f1", "phase-a"], ["f2", "phase-b"]]);
+  assert.equal(readFileSync(join(phaseJob, "seen-findings.jsonl"), "utf8"), readFileSync(join(phaseJob, "findings.jsonl"), "utf8"));
+  const consolidateText = readFileSync(join(phaseJob, "consolidate-prompt.md"), "utf8");
+  assert.match(consolidateText, /from 2 of 3 session\(s\)/);
+  assert.equal(readFileSync(join(phaseJob, "consolidate-cwd"), "utf8"), tempRoot);
+  assert.match(consolidateText, /### Shared Subject \(2 session\(s\)\)/);
+  assert.match(consolidateText, /- f1 \[fact\] \(session phase-a\) Fact from phase-a\./);
+  assert.match(consolidateText, /  > user-1: Remember phase-b\./);
+  assert.match(readFileSync(join(phaseJob, "consolidate-args"), "utf8"), /dream_memory_list,dream_memory_read,dream_memory_edit/);
+  assert.match(readFileSync(join(phaseJob, "extract-args"), "utf8"), /dream_memory_list,dream_memory_read,dream_finding/);
+  assert.doesNotMatch(readFileSync(join(phaseJob, "extract-args"), "utf8"), /dream_memory_edit/);
+  assert.equal(git(phaseLive, "diff", "--name-only", "master..dream/phase-job"), "merged.md");
+  assert.equal(JSON.parse(readFileSync(join(phaseJob, "state.json"), "utf8")).phase, undefined);
+
+  const groups = runnerTest.groupFindings([
+    { sessionId: "s1", subject: "B topic" }, { sessionId: "s1", subject: "a topic" },
+    { sessionId: "s2", subject: "A  Topic" }, { sessionId: "s1", subject: "B topic" },
+  ]);
+  assert.deepEqual(groups.map((group: { subject: string; sessions: number }) => [group.subject, group.sessions]), [
+    ["a topic", 2], ["B topic", 1],
+  ]);
+  const pathGroups = runnerTest.groupFindings([
+    { sessionId: "s1", subject: "likec4 validate", memoryPath: "likec4.md" },
+    { sessionId: "s2", subject: "likec4 build check", memoryPath: "likec4.md" },
+    { sessionId: "s3", subject: "likec4 validate" },
+  ]);
+  assert.deepEqual(pathGroups.map((group: { subject: string; sessions: number }) => [group.subject, group.sessions]), [
+    ["memory likec4.md", 2], ["likec4 validate", 1],
+  ]);
+  const pathPrompt = runnerTest.consolidatePrompt(
+    { candidateRoot: phaseCandidate, cwd: join(homedir(), "projects"), transcripts: [{}, {}] },
+    [{ id: "f1", sessionId: "s1", kind: "fact", subject: "likec4 validate", memoryPath: "likec4.md", statement: "Run validate.", evidence: [] }],
+  );
+  assert.match(pathPrompt, /### memory likec4\.md \(1 session\(s\)\)\n- f1 \[fact\] \(session s1, subject likec4 validate\) Run validate\./);
+  assert.match(pathPrompt, /A scope line must name that folder or a parent folder, for example "scope: ~\/projects"/);
+
   const competing = await Promise.allSettled(["A", "B"].map((name) => workerTest.applyMemoryEdit(editContext, {
     action: "write", path: "global/race.md", expectedHash: "missing",
     content: `---\ndescription: Race result.\n---\n\n${name}\n`,
     reason: "Keep a supported preference.",
-    evidence: [{ entryId: "user-1", quote: "Use short replies." }],
+    findingIds: ["f1"],
   })));
   assert.equal(competing.filter((result) => result.status === "fulfilled").length, 1);
   assert.equal(competing.filter((result) => result.status === "rejected").length, 1);

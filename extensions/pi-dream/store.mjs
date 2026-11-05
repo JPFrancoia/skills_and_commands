@@ -4,7 +4,8 @@ import {
   existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync,
   rmdirSync, writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve, sep } from "node:path";
 
 export function git(root, args, options = {}) {
   return execFileSync("git", ["-C", root, ...args], {
@@ -56,14 +57,32 @@ function memoryPath(path) {
     path.split("/").every((part) => part && !part.startsWith("."));
 }
 
-export function validateMarkdown(content) {
+export const DESCRIPTION_LIMIT = 150;
+
+/** @returns {{description: string, scope?: string}} */
+export function frontMatter(content) {
   const normalized = content.replace(/\r\n/g, "\n");
   const match = normalized.match(/^---\n([\s\S]*?)\n---(?:\n|$)/);
   if (!match) throw new Error("The Markdown file needs front matter with a description.");
-  const description = match[1].split("\n")
-    .map((line) => line.match(/^description:\s*(.+)\s*$/)?.[1]?.trim()).find(Boolean);
+  const field = (name) => match[1].split("\n")
+    .map((line) => line.startsWith(`${name}:`) ? line.slice(name.length + 1).trim() : "")
+    .find(Boolean)?.replace(/^['"]|['"]$/g, "");
+  const description = field("description");
   if (!description) throw new Error("The Markdown front matter needs a description.");
-  return description.replace(/^['"]|['"]$/g, "");
+  const scope = field("scope");
+  return scope ? { description, scope } : { description };
+}
+
+// True when cwd is the scope folder or inside it. A file without scope matches every cwd.
+export function scopeMatches(scope, cwd) {
+  if (!scope) return true;
+  const folder = resolve(scope === "~" || scope.startsWith("~/") ? join(homedir(), scope.slice(1)) : scope);
+  const current = resolve(cwd);
+  return current === folder || current.startsWith(`${folder}${sep}`);
+}
+
+export function validateMarkdown(content) {
+  return frontMatter(content).description;
 }
 
 export function memoryFiles(root) {
