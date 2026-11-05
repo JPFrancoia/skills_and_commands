@@ -77,5 +77,16 @@ Implementation checks completed on 2026-11-05.
 - The same check confirms that restored original models reuse successful consolidation.
 - The documentation worker updated `docs/pi-dream.md`. The parent reviewed the diff and shortened the confirmation description.
 - No review finding remains unresolved.
-- No paid provider run, live activation, or memory acceptance occurred. Both failed jobs remain available for explicit resume.
+- At the review checkpoint, no paid provider run, live activation, or memory acceptance occurred.
 
+## Approved local activation
+
+The user approved the local merge and cleanup of task worktrees after preservation checks. The user did not approve a push, paid job restart, model settings change, or memory acceptance.
+
+- Local `master` now contains the implementation and documentation commits.
+- The installed package resolves to `/home/djipey/informatique/ai/skills_and_commands/extensions/pi-dream`.
+- Both test suites, strict TypeScript checks, Node syntax checks, and repository hygiene checks pass in that checkout.
+- Live settings still contain only `dream.model: openai-codex/gpt-6-luna`.
+- Both failed jobs still report 50 completed sessions and the `consolidate` phase.
+- No process uses either task worktree. The merged commits preserve the documentation worker changes.
+- Open Pi sessions need `/reload` to load the updated extension. No reload or paid provider recovery ran in this session.
