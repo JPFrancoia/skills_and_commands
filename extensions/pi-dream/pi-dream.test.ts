@@ -481,9 +481,34 @@ try {
     "snapshot-session",
   ]);
 
+  const modelContext = {
+    model: { provider: "active", id: "current", api: "test" },
+    modelRegistry: { find: (provider: string) => provider === "virtual" ? { api: "pi-virtual" } : undefined },
+  } as unknown as ExtensionContext;
+  const selectModels = (dream: Record<string, unknown>, ctx = modelContext) => {
+    const api = { getSettings: () => ({ dream }) } as unknown as ExtensionAPI;
+    return ["workerModel", "orchestratorModel"].map((role) =>
+      dreamTest.selectModel(api, ctx, role as "workerModel" | "orchestratorModel"));
+  };
+  assert.deepEqual(selectModels({}), ["active/current", "active/current"]);
+  assert.deepEqual(selectModels({ model: "default/model" }), ["default/model", "default/model"]);
+  assert.deepEqual(selectModels({ model: "default/model", workerModel: "pool/model" }), ["pool/model", "default/model"]);
+  assert.deepEqual(selectModels({ model: "default/model", orchestratorModel: "review/model" }), ["default/model", "review/model"]);
+  assert.deepEqual(selectModels({ workerModel: "pool/model", orchestratorModel: "review/model" }), ["pool/model", "review/model"]);
+  const virtualContext = { ...modelContext, model: { provider: "virtual", id: "router", api: "pi-virtual" } } as ExtensionContext;
+  assert.deepEqual(selectModels({}, virtualContext), [null, null]);
+  assert.deepEqual(selectModels({ workerModel: "pool/model", orchestratorModel: "review/model" }, virtualContext),
+    ["pool/model", "review/model"]);
+  for (const invalid of ["", "missing-slash", "/model", "provider/", "provider/model name", 123, "virtual/router"]) {
+    assert.deepEqual(selectModels({ model: invalid }), [null, null]);
+    assert.deepEqual(selectModels({ model: "default/model", workerModel: invalid }), [null, "default/model"]);
+    assert.deepEqual(selectModels({ model: "default/model", orchestratorModel: invalid }), ["default/model", null]);
+  }
+
   const commands = new Map<string, { handler: Function }>();
   const tools = new Map<string, { execute: Function }>();
   const events = new Map<string, Function>();
+  let dreamSettings: Record<string, unknown> = { model: "openai-codex/gpt-test" };
   const pi = {
     registerCommand(name: string, options: { handler: Function }) {
       commands.set(name, options);
@@ -495,7 +520,7 @@ try {
       events.set(name, handler);
     },
     getSettings() {
-      return { dream: { model: "openai-codex/gpt-test" } };
+      return { dream: dreamSettings };
     },
   } as unknown as ExtensionAPI;
   piDream(pi);
@@ -528,9 +553,78 @@ try {
       } as unknown as ExtensionContext);
       assert.ok(confirmation.startsWith(`${count} session(s)`));
       assert.match(confirmation, /Up to 10 worker\(s\) will run at once\./);
+      assert.match(confirmation, /worker model openai-codex\/gpt-test/);
+      assert.match(confirmation, /orchestrator model openai-codex\/gpt-test/);
     }
   } finally {
     SessionManager.list = originalList;
+  }
+
+  const roleHome = join(tempRoot, "role-home");
+  const roleMemory = join(tempRoot, "role-memory");
+  const rolePi = join(tempRoot, "role-pi.mjs");
+  writeFileSync(rolePi, [
+    "#!/usr/bin/env node",
+    'import { appendFileSync, readFileSync, writeFileSync } from "node:fs";',
+    'import { join } from "node:path";',
+    "readFileSync(0);",
+    'const phase = process.env.PI_DREAM_PHASE;',
+    'const args = process.argv.slice(2);',
+    'appendFileSync(join(process.env.PI_DREAM_PARENT_JOB_DIR, "models.jsonl"), JSON.stringify({ phase, model: args[args.indexOf("--model") + 1] }) + "\\n");',
+    'if (phase === "extract") writeFileSync(process.env.PI_DREAM_FINDINGS, JSON.stringify({ sessionId: process.env.PI_DREAM_SESSION_ID, kind: "preference", subject: "test replies", statement: "Use short replies.", evidence: [{ entryId: "user-1", quote: "Use short replies." }] }) + "\\n");',
+    'console.log(JSON.stringify({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] }));',
+  ].join("\n"));
+  chmodSync(rolePi, 0o755);
+  const originalOpen = SessionManager.open;
+  const savedPiBin = process.env.PI_DREAM_PI_BIN;
+  try {
+    process.env.PI_DREAM_HOME = roleHome;
+    process.env.PI_DREAM_MEMORY_ROOT = roleMemory;
+    process.env.PI_DREAM_PI_BIN = rolePi;
+    dreamSettings = { model: "default/model", workerModel: "pool/model", orchestratorModel: "other/orchestrator" };
+    SessionManager.list = async () => [{
+      id: "role-session", path: join(tempRoot, "role-session.jsonl"), cwd: tempRoot,
+      created: new Date(0), modified: new Date(0),
+    }] as Awaited<ReturnType<typeof SessionManager.list>>;
+    SessionManager.open = (() => ({
+      getBranch: () => [messageEntry("user-1", "user", "Use short replies.")],
+    })) as unknown as typeof SessionManager.open;
+    let confirmation = "";
+    await commands.get("dream")!.handler("1", {
+      ...modelContext, cwd: tempRoot, hasUI: true,
+      ui: {
+        confirm: async (_title: string, text: string) => { confirmation = text; return true; },
+        notify: () => {},
+      },
+    } as unknown as ExtensionContext);
+    assert.match(confirmation, /worker model pool\/model/);
+    assert.match(confirmation, /orchestrator model other\/orchestrator/);
+    const [id] = readdirSync(join(roleHome, "jobs"));
+    const dir = join(roleHome, "jobs", id);
+    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+    assert.equal(manifest.model, "pool/model");
+    assert.equal(manifest.orchestratorModel, "other/orchestrator");
+    const deadline = Date.now() + 5_000;
+    let state = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
+    while (["queued", "running"].includes(state.status)) {
+      if (Date.now() > deadline) throw new Error("The role model command did not finish.");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      state = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
+    }
+    assert.equal(state.status, "ready", state.error);
+    assert.deepEqual(readFileSync(join(dir, "models.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)), [
+      { phase: "extract", model: "pool/model" },
+      { phase: "consolidate", model: "other/orchestrator" },
+    ]);
+    assert.equal(git(roleMemory, "rev-parse", "HEAD"), manifest.base.baseCommit);
+  } finally {
+    SessionManager.list = originalList;
+    SessionManager.open = originalOpen;
+    dreamSettings = { model: "openai-codex/gpt-test" };
+    process.env.PI_DREAM_HOME = dreamHome;
+    process.env.PI_DREAM_MEMORY_ROOT = memoryRoot;
+    if (savedPiBin === undefined) delete process.env.PI_DREAM_PI_BIN;
+    else process.env.PI_DREAM_PI_BIN = savedPiBin;
   }
 
   assert.deepEqual(dreamTest.workerExtensions(pi), []);
@@ -941,7 +1035,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, delay));
     return { ok: index !== 2, error: `failed ${index}` };
   });
-  assert.equal(poolFailure.error, "failed 2");
+  assert.deepEqual(poolFailure, { ok: false, error: "failed 2" });
   assert.deepEqual(poolStarts.slice(0, 3), [0, 1, 2], "a slow worker does not block the next worker");
   assert.ok(!poolStarts.includes(4), "no new worker starts after a failure");
 
@@ -1254,7 +1348,20 @@ try {
       return false;
     } },
   });
-  assert.match(resumeConfirmation, /test\/model/);
+  assert.match(resumeConfirmation, /worker model test\/model/);
+  assert.match(resumeConfirmation, /orchestrator model test\/model/);
+  writeFileSync(join(cancelledResume.jobDir, "manifest.json"), JSON.stringify({
+    ...cancelledResume, orchestratorModel: "other/orchestrator",
+  }));
+  await commands.get("dream-resume")!.handler(cancelledResume.id, {
+    ...commandContext,
+    ui: { ...commandContext.ui, confirm: async (_title: string, message: string) => {
+      resumeConfirmation = message;
+      return false;
+    } },
+  });
+  assert.match(resumeConfirmation, /worker model test\/model/);
+  assert.match(resumeConfirmation, /orchestrator model other\/orchestrator/);
   assert.match(resumeConfirmation, /unfinished transcripts/);
   assert.equal(JSON.parse(readFileSync(join(cancelledResume.jobDir, "state.json"), "utf8")).status, "failed");
   await commands.get("dream-resume")!.handler(cancelledResume.id, { ...commandContext, hasUI: false });

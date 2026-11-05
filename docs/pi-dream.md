@@ -95,13 +95,15 @@ The runner sets these environment variables for workers:
 
 ## Session scope and workers
 
-The runner uses a worker pool. The pool runs up to 10 workers at the same time in each batch. A manifest can request fewer workers. The runner caps larger requests at 10. A new worker starts when any worker finishes. A slow worker does not stop the other workers. After a failure, no new worker starts. Running workers finish, and the job fails. Different batches can run at the same time, so the total can exceed 10. More sessions and workers can use more resources and reach provider rate limits.
+The runner uses a worker pool. The pool runs up to 10 workers at the same time in each batch. A manifest can request fewer workers. The runner caps larger requests at 10. A new worker starts when any worker finishes. A slow worker does not stop the other workers. After a failure, no new worker starts. Running workers finish, and the job fails. Different batches can run at the same time, so the total can exceed 10.
+
+Each batch has its own candidate files. Concurrent batches still share provider load. Their proposals can need a manual merge after one proposal changes `master`. Pi Dream does not retry consolidation automatically. More sessions and workers can use more resources and reach provider rate limits.
 
 The job state has a `phase` field while the job runs. Its value is `extract` or `consolidate`. The field is removed when the job is ready.
 
 The runner sends each prompt through standard input. Standard input is the data stream that a process reads. This method avoids command-line size limits for long transcripts. Extract worker JSON output goes to `<job>/workers/<index>-<session-id>/attempt-*/worker.log`. Standard error is the error data stream from a process. Extract worker standard error goes to `<job>/workers/<index>-<session-id>/attempt-*/worker.error.log`. The consolidate worker uses `<job>/workers/consolidate/attempt-*/`. The runner reads output as separate JSON events. It keeps complete logs on disk, not in memory. This method prevents `spawnSync pi ENOBUFS`.
 
-Each worker process must produce a final successful model response. A successful process exit alone does not count as success. Each incomplete tool call has a 120-second limit. The combined arguments for one call have a 16 KiB limit. The limit for `dream_memory_edit` is 1 MiB. The runner stops a tool call that has more than 8 KiB of trailing whitespace. The runner sends `SIGTERM`, a stop request, when a worker exceeds a limit. If the worker does not stop within five seconds, the runner sends `SIGKILL` to force termination.
+Each worker process must produce a final successful model response. A successful process exit alone does not count as success. Each unfinished tool call has a 120-second inactivity limit. The runner resets this timer when argument output contains a non-whitespace character. Empty output and whitespace-only output do not reset it. The combined arguments for one call have a 16 KiB limit. The limit for `dream_memory_edit` is 1 MiB. The runner stops a tool call that has more than 8 KiB of trailing whitespace. The runner sends `SIGTERM`, a stop request, when a worker exceeds a limit. If the worker does not stop within five seconds, the runner sends `SIGKILL` to force termination.
 
 Extract workers in one batch read the same candidate store. Each consolidation attempt edits a separate copy. Other batches use separate candidate stores. Memory tools use a lock. The lock allows one tool call at a time to check hashes or change files. A lock prevents simultaneous access to shared data. The tools cannot use Bash or access other files.
 
@@ -156,7 +158,17 @@ Existing jobs can contain candidate Git repositories from the earlier implementa
 
 ## Model and privacy
 
-Set `dream.model` in `~/.pi/agent/settings.json` to a concrete `provider/model` value to select the worker model. If the value is absent, Pi Dream uses the active concrete model. If Pi Dream cannot select a concrete model, it stops and asks you to set `dream.model`.
+Set `dream.workerModel` and `dream.orchestratorModel` in `~/.pi/agent/settings.json` to select separate models. Each setting falls back to `dream.model`, then to the active concrete model. If Pi Dream cannot select a concrete model for either role, it stops and asks you to set a model.
+
+The worker model reads sessions and extracts findings. The orchestrator model reads findings and edits candidate memory. A new job manifest stores the worker model in `model` and the orchestrator model in the optional `orchestratorModel` field. Older jobs use `model` for both roles. A resumed job keeps its recorded models, even if you change the settings.
+
+```json
+"dream": {
+  "model": "my-provider/my-model",
+  "workerModel": "worker-provider/worker-model",
+  "orchestratorModel": "memory-provider/memory-model"
+}
+```
 
 Workers start with `--no-extensions`. A worker cannot use a provider that an extension adds unless you load that extension. Set `dream.extensions` to a list of extension paths. The runner passes each path to the worker with `--extension`.
 
@@ -169,7 +181,7 @@ Workers start with `--no-extensions`. A worker cannot use a provider that an ext
 
 A path that starts with `~/` starts at your home folder. Pi Dream resolves other relative paths from `~/.pi/agent`. The job manifest stores the absolute paths. If the setting is missing, the worker gets no extra extension. Without the provider extension, the worker log shows `Model "<provider>/<model>" not found` and the job fails.
 
-Before the batch starts, Pi Dream shows the model, session count, working directory, and parallel worker count. It asks for confirmation because the batch sends session content to the selected provider. Pi Dream processes sessions from the current working directory only. Redaction covers common credential forms, but it cannot find every secret. Review the confirmation details before you approve a batch.
+Before the batch starts, Pi Dream names both models and their providers. It shows the session count, working directory, and parallel worker count. It asks for confirmation. The worker provider receives session content. The orchestrator provider receives findings and candidate memory. Pi Dream processes sessions from the current working directory only. Redaction covers common credential forms, but it cannot find every secret. Review the confirmation details before you approve a batch.
 
 Before each agent run, `before_agent_start` adds the memory folder and guidance to the system prompt. The system prompt contains instructions sent to the model. It also includes an index, a list of accepted memory paths and descriptions. The index shows only files in scope for the session working directory. It includes at most 100 files and 12,000 characters. It does not include full file content. If some files do not fit, the index adds this line: `<n> more file(s) are not listed. Search them with rg.` Pi Dream has no saved search database or meaning-based search.
 
@@ -183,7 +195,7 @@ All normal sessions use the same accepted memory root. The index uses accepted M
 
 A failed worker marks the job as failed. The job does not publish a branch. Pi Dream does not apply a failed job. A queued or running job cannot be discarded through `/dream-discard`.
 
-Run `/dream-resume [job-id]` to resume a failed job. Pi Dream asks for confirmation before it sends unfinished transcripts to the original provider again. It keeps valid completed sessions and skips them. Completion records bind the transcript and findings to their hashes. The runner also accepts an older successful session when its job summary says it completed and its log has a final successful model response.
+Run `/dream-resume [job-id]` to resume a failed job. Pi Dream names both recorded providers and asks for confirmation before it sends unfinished transcripts to the worker provider again. It sends findings and candidate memory to the recorded orchestrator provider. It keeps valid completed sessions and skips them. Completion records bind the transcript and findings to their hashes. The runner also accepts an older successful session when its job summary says it completed and its log has a final successful model response.
 
 If an active runner, accepted session, or conflicting reservation exists, resume stops. It can resume an interrupted queued or running job after its process stops and its lock clears. Resume also stops for older jobs that edited the original candidate during consolidation. Review those candidates and logs manually. A stale lock blocks resume. Inspect its owner before you remove it. Resume does not change accepted memory automatically.
 

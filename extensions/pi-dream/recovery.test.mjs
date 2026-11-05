@@ -51,7 +51,7 @@ for (const [name, body, expected] of [
   ["whitespace", 'emit("toolcall_start",{toolName:"dream_finding",contentIndex:0}); emit("toolcall_delta",{contentIndex:0,delta:" ".repeat(5000)}); emit("toolcall_delta",{contentIndex:0,delta:" ".repeat(5000)});', /whitespace/],
   ["oversized call", 'emit("toolcall_start",{toolName:"dream_finding",contentIndex:0}); emit("toolcall_delta",{contentIndex:0,delta:"x".repeat(20000)});', /size limit/],
   ["unfinished call", 'emit("toolcall_start",{toolName:"dream_finding",contentIndex:0});', /tool call.*timed out/i],
-  ["active but unfinished call", 'emit("toolcall_start",{toolName:"dream_finding",contentIndex:0});setInterval(()=>emit("toolcall_delta",{contentIndex:0,delta:"x"}),10);', /tool call.*timed out/i],
+  ["whitespace without progress", 'emit("toolcall_start",{toolName:"dream_finding",contentIndex:0});setInterval(()=>emit("toolcall_delta",{contentIndex:0,delta:" "}),10);', /tool call.*timed out/i],
 ]) {
   test(`stop ${name} and retry only twice`, async (t) => {
     const f = fixture(t, `const emit=(type,fields)=>console.log(JSON.stringify({type:"message_update",assistantMessageEvent:{type,...fields}}));\n${body}\nprocess.on("SIGTERM",()=>{}); setInterval(()=>{},1000); await new Promise(()=>{});`);
@@ -65,6 +65,62 @@ for (const [name, body, expected] of [
     assert.equal(existsSync(join(f.worker(), "result.json")), false);
   });
 }
+
+test("useful argument output can exceed the inactivity interval", async (t) => {
+  const f = fixture(t, `if(phase==="extract"){${recordFinding}} else {
+    const emit=(type,fields)=>console.log(JSON.stringify({type:"message_update",assistantMessageEvent:{type,...fields}}));
+    emit("toolcall_start",{toolName:"dream_memory_edit",contentIndex:0});
+    for(let i=0;i<8;i++){
+      await new Promise(resolve=>setTimeout(resolve,50));
+      emit("toolcall_delta",{contentIndex:0,delta:"useful output"});
+    }
+    emit("toolcall_end",{contentIndex:0});
+  }`);
+  assert.equal((await f.run()).status, "ready");
+  assert.equal(f.calls().filter(c=>c.phase==="consolidate").length, 1);
+});
+
+test("argument progress stops protecting a stalled call", async (t) => {
+  const f = fixture(t, `const emit=(type,fields)=>console.log(JSON.stringify({type:"message_update",assistantMessageEvent:{type,...fields}}));
+    emit("toolcall_start",{toolName:"dream_finding",contentIndex:0});
+    for(let i=0;i<5;i++){
+      await new Promise(resolve=>setTimeout(resolve,50));
+      emit("toolcall_delta",{contentIndex:0,delta:"useful output"});
+    }
+    setInterval(()=>{},1000); await new Promise(()=>{});
+  `);
+  const result = await f.run();
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /tool call.*timed out/i);
+  assert.equal(f.calls().length, 3);
+});
+
+test("the total limit still stops endless useful output", async (t) => {
+  const f = fixture(t, `const emit=(type,fields)=>console.log(JSON.stringify({type:"message_update",assistantMessageEvent:{type,...fields}}));
+    emit("toolcall_start",{toolName:"dream_finding",contentIndex:0});
+    setInterval(()=>emit("toolcall_delta",{contentIndex:0,delta:"x"}),10);
+    await new Promise(()=>{});
+  `);
+  const result = await f.run({ timeoutMs: 500 });
+  assert.equal(result.status, "failed");
+  assert.match(result.error, /Worker timed out after 500ms/);
+  assert.equal(f.calls().length, 3);
+});
+
+test("route worker and orchestrator models and keep legacy defaults", async (t) => {
+  for (const orchestratorModel of [undefined, "other/orchestrator"]) {
+    const f = fixture(t, `if(phase==="extract"){${recordFinding}}
+      const args=process.argv.slice(2);
+      appendFileSync(join(job,"models"),JSON.stringify({phase,model:args[args.indexOf("--model")+1]})+"\\n");
+    `);
+    writeJson(f.manifestPath, { ...JSON.parse(readFileSync(f.manifestPath)), orchestratorModel });
+    assert.equal((await f.run()).status, "ready");
+    assert.deepEqual(readFileSync(join(f.jobDir, "models"), "utf8").trim().split("\n").map(JSON.parse), [
+      { phase: "extract", model: "test/model" },
+      { phase: "consolidate", model: orchestratorModel ?? "test/model" },
+    ]);
+  }
+});
 
 test("keep only successful attempt findings", async (t) => {
   const f = fixture(t, `if(phase==="extract") { ${recordFinding}
@@ -149,16 +205,26 @@ test("isolate partial consolidation and resume without extraction", async (t) =>
   assert.equal(readFileSync(join(f.jobDir, "writes.jsonl"), "utf8").trim().split("\n").length, 1);
 });
 
-test("retry publication without repeating successful consolidation", async (t) => {
-  const f = fixture(t, `if(phase==="extract"){${recordFinding}}`);
-  const lock = join(f.memoryRoot, ".git", "refs", "heads", "dream", "job.lock");
-  mkdirSync(join(f.memoryRoot, ".git", "refs", "heads", "dream"), { recursive: true });
-  writeFileSync(lock, "Do not delete an active lock.");
-  assert.equal((await f.run()).status, "failed");
-  rmSync(lock);
-  const before = f.calls().length;
-  assert.equal((await f.run({ resume: true })).status, "ready");
-  assert.equal(f.calls().length, before);
+test("retry publication with recorded models and reject a changed orchestrator", async (t) => {
+  for (const orchestratorModel of [undefined, "other/orchestrator"]) {
+    const f = fixture(t, `if(phase==="extract"){${recordFinding}}`);
+    const manifest = { ...JSON.parse(readFileSync(f.manifestPath)), orchestratorModel };
+    writeJson(f.manifestPath, manifest);
+    const lock = join(f.memoryRoot, ".git", "refs", "heads", "dream", "job.lock");
+    mkdirSync(join(f.memoryRoot, ".git", "refs", "heads", "dream"), { recursive: true });
+    writeFileSync(lock, "Do not delete an active lock.");
+    assert.equal((await f.run()).status, "failed");
+    rmSync(lock);
+    const before = f.calls().length;
+    writeJson(f.manifestPath, { ...manifest, orchestratorModel: "changed/model" });
+    const changed = await f.run({ resume: true });
+    assert.equal(changed.status, "failed");
+    assert.match(changed.error, /Consolidation completion changed or is invalid/);
+    assert.equal(f.calls().length, before);
+    writeJson(f.manifestPath, manifest);
+    assert.equal((await f.run({ resume: true })).status, "ready");
+    assert.equal(f.calls().length, before);
+  }
 });
 
 test("reject concurrent resume and unsafe legacy consolidation", async (t) => {

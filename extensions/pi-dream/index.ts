@@ -45,6 +45,7 @@ type JobManifest = {
   cwd: string;
   createdAt: string;
   model: string;
+  orchestratorModel?: string;
   concurrency: number;
   memoryRoot: string;
   candidateRoot: string;
@@ -280,12 +281,14 @@ function writeState(jobDir: string, state: JobState): void {
   atomicJson(join(jobDir, "state.json"), state);
 }
 
-function selectModel(pi: ExtensionAPI, ctx: ExtensionContext): string | null {
-  const settings = pi.getSettings() as { dream?: { model?: unknown } };
-  if (typeof settings.dream?.model === "string" && settings.dream.model.includes("/")) {
-    const [provider, ...idParts] = settings.dream.model.split("/");
+function selectModel(pi: ExtensionAPI, ctx: ExtensionContext, role: "workerModel" | "orchestratorModel"): string | null {
+  const settings = pi.getSettings() as { dream?: { model?: unknown; workerModel?: unknown; orchestratorModel?: unknown } };
+  const configured = settings.dream?.[role] ?? settings.dream?.model;
+  if (configured !== undefined) {
+    if (typeof configured !== "string" || !/^[^/\s]+\/\S+$/.test(configured)) return null;
+    const [provider, ...idParts] = configured.split("/");
     const model = ctx.modelRegistry.find(provider, idParts.join("/"));
-    return model?.api === "pi-virtual" ? null : settings.dream.model;
+    return model?.api === "pi-virtual" ? null : configured;
   }
   if (ctx.model?.provider && ctx.model.id && ctx.model.api !== "pi-virtual") {
     return `${ctx.model.provider}/${ctx.model.id}`;
@@ -318,9 +321,10 @@ function projectCoverage(home: string, cwd: string, sessions: Array<{ id: string
 
 async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext): Promise<void> {
   const count = parseBatchCount(args, DEFAULT_BATCH, MAX_BATCH);
-  const model = selectModel(pi, ctx);
-  if (!model) {
-    notify(ctx, "Set dream.model to a concrete provider/model value.", "error");
+  const model = selectModel(pi, ctx, "workerModel");
+  const orchestratorModel = selectModel(pi, ctx, "orchestratorModel");
+  if (!model || !orchestratorModel) {
+    notify(ctx, "Set dream.workerModel and dream.orchestratorModel, or their dream.model default, to concrete provider/model values.", "error");
     return;
   }
   if (!ctx.hasUI) {
@@ -337,7 +341,11 @@ async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
   }
   const approved = await ctx.ui.confirm(
     "Start Pi Dream?",
-    `${proposed.length} session(s) from ${ctx.cwd} will go to ${model}. Up to ${DEFAULT_CONCURRENCY} worker(s) will run at once.`,
+    [
+      `${proposed.length} session(s) from ${ctx.cwd} will go to worker model ${model}.`,
+      `Findings and candidate memory will go to orchestrator model ${orchestratorModel}.`,
+      `Up to ${DEFAULT_CONCURRENCY} worker(s) will run at once.`,
+    ].join("\n"),
   );
   if (!approved) return;
   const prepared = proposed.map((session: { id: string; path: string; cwd: string; created: Date }) => ({
@@ -369,7 +377,7 @@ async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
     });
     const concurrency = Math.min(DEFAULT_CONCURRENCY, transcripts.length);
     const manifest: JobManifest = {
-      version: 2, id, cwd: ctx.cwd, createdAt: new Date().toISOString(), model, concurrency,
+      version: 2, id, cwd: ctx.cwd, createdAt: new Date().toISOString(), model, orchestratorModel, concurrency,
       memoryRoot: memoryRoot(), candidateRoot, jobDir,
       workerExtension: join(dirname(fileURLToPath(import.meta.url)), "worker-extension.ts"),
       extensions: workerExtensions(pi),
@@ -447,8 +455,9 @@ async function resumeDream(args: string, ctx: ExtensionContext): Promise<void> {
   });
   const manifest = readJob<JobManifest>(dir, "manifest.json");
   const approved = await ctx.ui.confirm("Resume Pi Dream?", [
-    `Resume job ${manifest.id} with ${manifest.model}?`,
-    "The runner will keep valid completed sessions and send unfinished transcripts to this provider again.",
+    `Resume job ${manifest.id} with worker model ${manifest.model}?`,
+    `Findings and candidate memory will go to orchestrator model ${manifest.orchestratorModel ?? manifest.model}.`,
+    "The runner will keep valid completed sessions and send unfinished transcripts to the worker provider again.",
     "Failed consolidation will restart from a separate candidate. Accepted memory will not change.",
   ].join("\n"));
   if (!approved) return;
@@ -687,5 +696,5 @@ export const __test__ = {
   applyReviewBranch, buildMemoryIndex, buildTranscript, createCandidateSnapshot,
   initializeMemoryStore, loadProcessedSessions, markSessionsProcessed,
   parseBatchCount, redactTranscript, availableSessions, reconcileJobs, publishJob,
-  selectJob, workerExtensions, clipMiddle, scopeMatches, assertResumable,
+  selectJob, selectModel, workerExtensions, clipMiddle, scopeMatches, assertResumable,
 };

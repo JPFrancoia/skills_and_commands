@@ -240,11 +240,12 @@ function runWorkerProcess({ manifest, phase, label, env, prompt, tools, workerDi
         const name = update.toolName ?? update.partial?.content?.[key]?.name;
         calls.set(key, { bytes: 0, whitespace: 0,
           limit: name === "dream_memory_edit" ? 1024 * 1024 : 16 * 1024,
-          timer: setTimeout(() => stop(`Worker tool call timed out after ${toolCallTimeoutMs}ms.`), toolCallTimeoutMs),
+          timer: setTimeout(() => stop(`Worker tool call timed out after ${toolCallTimeoutMs}ms without argument progress.`), toolCallTimeoutMs),
         });
       } else if (update.type === "toolcall_delta") {
         const call = calls.get(key);
         if (!call || typeof update.delta !== "string") return;
+        if (/\S/u.test(update.delta)) call.timer.refresh();
         call.bytes += Buffer.byteLength(update.delta);
         const whitespace = update.delta.match(/\s*$/u)[0].length;
         call.whitespace = whitespace === update.delta.length ? call.whitespace + whitespace : whitespace;
@@ -452,6 +453,7 @@ function candidateHash(root) {
 }
 
 async function consolidate(manifest, merged, options) {
+  manifest = { ...manifest, model: manifest.orchestratorModel ?? manifest.model };
   const dir = join(manifest.jobDir, "workers", "consolidate");
   mkdirSync(dir, { recursive: true });
   const resultPath = join(dir, "result.json");
