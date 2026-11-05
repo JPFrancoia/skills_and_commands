@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -52,6 +53,8 @@ const { default: workerExtension, __test__: workerTest } = await import(
 );
 const { runJob, __test__: runnerTest } = await import("./runner.mjs");
 const { withLock } = await import("./store.mjs");
+
+const successfulWorkerEnd = `printf '\\n%s\\n' '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}'`;
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-C", cwd, ...args], {
@@ -500,6 +503,7 @@ try {
     "dream",
     "dream-apply",
     "dream-discard",
+    "dream-resume",
     "dream-review",
     "dream-status",
   ]);
@@ -707,6 +711,7 @@ try {
       '# $PI_DREAM_SESSION_ID',
       "EOF",
       'printf "{\\"sessionId\\":\\"%s\\",\\"action\\":\\"write\\",\\"path\\":\\"global/%s.md\\",\\"reason\\":\\"test\\",\\"evidence\\":[]}\\n" "$PI_DREAM_SESSION_ID" "$PI_DREAM_SESSION_ID" >> "$PI_DREAM_JOB_DIR/writes.jsonl"',
+      successfulWorkerEnd,
     ].join("\n"),
   );
   chmodSync(fakePi, 0o755);
@@ -808,6 +813,7 @@ try {
     '  state.active -= 1;',
     '  writeJson(path, state);',
     '});',
+    'console.log(JSON.stringify({type:"agent_end",messages:[{role:"assistant",stopReason:"stop"}]}));',
   ].join("\n"));
   chmodSync(limitPi, 0o755);
   for (const requested of [undefined, 100]) {
@@ -876,6 +882,7 @@ try {
       'printf "\\n%s\\n" "$PI_DREAM_SESSION_ID" >> "$PI_DREAM_MEMORY_ROOT/global/shared.md"',
       'printf "{\\"sessionId\\":\\"%s\\",\\"action\\":\\"write\\",\\"path\\":\\"global/shared.md\\",\\"reason\\":\\"test\\",\\"evidence\\":[]}\\n" "$PI_DREAM_SESSION_ID" >> "$PI_DREAM_JOB_DIR/writes.jsonl"',
       "cat >/dev/null",
+      successfulWorkerEnd,
     ].join("\n"),
   );
   chmodSync(conflictPi, 0o755);
@@ -953,18 +960,20 @@ try {
   writeFileSync(phasePi, [
     "#!/bin/sh",
     'if [ "$PI_DREAM_PHASE" = "consolidate" ]; then',
-    '  cat > "$PI_DREAM_JOB_DIR/consolidate-prompt.md"',
-    '  printf "%s\\n" "$*" > "$PI_DREAM_JOB_DIR/consolidate-args"',
-    '  cp "$PI_DREAM_FINDINGS" "$PI_DREAM_JOB_DIR/seen-findings.jsonl"',
-    '  printf "%s" "$PI_DREAM_CWD" > "$PI_DREAM_JOB_DIR/consolidate-cwd"',
+    '  cat > "$PI_DREAM_PARENT_JOB_DIR/consolidate-prompt.md"',
+    '  printf "%s\\n" "$*" > "$PI_DREAM_PARENT_JOB_DIR/consolidate-args"',
+    '  cp "$PI_DREAM_FINDINGS" "$PI_DREAM_PARENT_JOB_DIR/seen-findings.jsonl"',
+    '  printf "%s" "$PI_DREAM_CWD" > "$PI_DREAM_PARENT_JOB_DIR/consolidate-cwd"',
     '  printf -- "---\\ndescription: Shared subject.\\n---\\n\\nMerged.\\n" > "$PI_DREAM_MEMORY_ROOT/merged.md"',
+    successfulWorkerEnd,
     "  exit 0",
     "fi",
     "cat >/dev/null",
-    'printf "%s\\n" "$*" > "$PI_DREAM_JOB_DIR/extract-args"',
+    'printf "%s\\n" "$*" > "$PI_DREAM_PARENT_JOB_DIR/extract-args"',
     'if [ "$PI_DREAM_SESSION_ID" != "phase-c" ]; then',
     '  printf "{\\"sessionId\\":\\"%s\\",\\"kind\\":\\"fact\\",\\"subject\\":\\"Shared Subject\\",\\"statement\\":\\"Fact from %s.\\",\\"evidence\\":[{\\"entryId\\":\\"user-1\\",\\"quote\\":\\"Remember %s.\\"}]}\\n" "$PI_DREAM_SESSION_ID" "$PI_DREAM_SESSION_ID" "$PI_DREAM_SESSION_ID" > "$PI_DREAM_FINDINGS"',
     "fi",
+    successfulWorkerEnd,
   ].join("\n"));
   chmodSync(phasePi, 0o755);
   const phaseManifest = join(phaseJob, "manifest.json");
@@ -1058,6 +1067,7 @@ try {
     `touch "${tempRoot}/$PI_DREAM_SESSION_ID.started"`,
     `while [ ! -f "${tempRoot}/batch-a.started" ] || [ ! -f "${tempRoot}/batch-b.started" ]; do sleep 0.01; done`,
     'printf "---\\ndescription: Concurrent memory.\\n---\\n\\n%s\\n" "$PI_DREAM_SESSION_ID" > "$PI_DREAM_MEMORY_ROOT/$PI_DREAM_SESSION_ID.md"',
+    successfulWorkerEnd,
   ].join("\n").replace('printf "---', 'printf -- "---'));
   chmodSync(batchPi, 0o755);
   const concurrentResults = await Promise.all([batchA, batchB].map((manifest) =>
@@ -1223,7 +1233,8 @@ try {
   chmodSync(failPi, 0o755);
   assert.equal((await runJob(join(failed.jobDir, "manifest.json"), { piBin: failPi })).status, "failed");
   const failedState = JSON.parse(readFileSync(join(failed.jobDir, "state.json"), "utf8"));
-  const failedWorker = join(failed.jobDir, "workers", "000-failed");
+  const failedRoot = join(failed.jobDir, "workers", "000-failed");
+  const failedWorker = join(failedRoot, readdirSync(failedRoot).find((name) => name.startsWith("attempt-"))!);
   assert.match(failedState.error, /Codex quota exhausted\./);
   assert.match(failedState.error, /worker\.error\.log/);
   assert.equal(readFileSync(join(failedWorker, "worker.error.log"), "utf8"), "Codex quota exhausted.\n");
@@ -1231,11 +1242,88 @@ try {
   assert.throws(() => git(concurrentMemory, "rev-parse", "--verify", "refs/heads/dream/failed"));
   assert.deepEqual(dreamTest.availableSessions(concurrentHome, [{ id: "failed" }]), [{ id: "failed" }]);
 
+  const cancelledResume = makeJob("cancelled-resume");
+  writeFileSync(join(cancelledResume.jobDir, "state.json"), JSON.stringify({
+    id: cancelledResume.id, status: "failed", completed: 0, total: 1,
+  }));
+  let resumeConfirmation = "";
+  await commands.get("dream-resume")!.handler(cancelledResume.id, {
+    ...commandContext,
+    ui: { ...commandContext.ui, confirm: async (_title: string, message: string) => {
+      resumeConfirmation = message;
+      return false;
+    } },
+  });
+  assert.match(resumeConfirmation, /test\/model/);
+  assert.match(resumeConfirmation, /unfinished transcripts/);
+  assert.equal(JSON.parse(readFileSync(join(cancelledResume.jobDir, "state.json"), "utf8")).status, "failed");
+  await commands.get("dream-resume")!.handler(cancelledResume.id, { ...commandContext, hasUI: false });
+  assert.equal(JSON.parse(readFileSync(join(cancelledResume.jobDir, "state.json"), "utf8")).status, "failed");
+  for (const status of ["ready", "applied", "discarded"]) {
+    writeFileSync(join(cancelledResume.jobDir, "state.json"), JSON.stringify({ id: cancelledResume.id, status }));
+    await assert.rejects(commands.get("dream-resume")!.handler(cancelledResume.id, commandContext), /cannot resume/);
+  }
+  writeFileSync(join(cancelledResume.jobDir, "state.json"), JSON.stringify({ id: cancelledResume.id, status: "failed" }));
+  mkdirSync(join(cancelledResume.jobDir, ".runner-lock"));
+  await assert.rejects(commands.get("dream-resume")!.handler(cancelledResume.id, commandContext), /runner lock/);
+  rmSync(join(cancelledResume.jobDir, ".runner-lock"), { recursive: true });
+  writeFileSync(join(cancelledResume.jobDir, "state.json"), JSON.stringify({
+    id: cancelledResume.id, status: "running", runnerPid: process.pid,
+  }));
+  await assert.rejects(commands.get("dream-resume")!.handler(cancelledResume.id, commandContext), /still active/);
+  writeFileSync(join(cancelledResume.jobDir, "state.json"), JSON.stringify({ id: cancelledResume.id, status: "failed" }));
+
+  await assert.rejects(commands.get("dream-resume")!.handler(cancelledResume.id, {
+    ...commandContext,
+    ui: { ...commandContext.ui, confirm: async () => {
+      writeFileSync(join(cancelledResume.jobDir, "state.json"), JSON.stringify({
+        id: cancelledResume.id, status: "running", runnerPid: process.pid,
+      }));
+      return true;
+    } },
+  }), /still active/);
+  assert.equal(JSON.parse(readFileSync(join(cancelledResume.jobDir, "state.json"), "utf8")).runnerPid, process.pid);
+  writeFileSync(join(cancelledResume.jobDir, "state.json"), JSON.stringify({ id: cancelledResume.id, status: "failed" }));
+
+  const reservedResume = makeJob("reserved-resume");
+  writeFileSync(join(reservedResume.jobDir, "manifest.json"), JSON.stringify({
+    ...reservedResume, sessionIds: cancelledResume.sessionIds,
+  }));
+  await assert.rejects(commands.get("dream-resume")!.handler(cancelledResume.id, commandContext), /already reserves/);
+  writeFileSync(join(reservedResume.jobDir, "state.json"), JSON.stringify({ id: reservedResume.id, status: "failed" }));
+  dreamTest.assertResumable(concurrentHome, cancelledResume.jobDir);
+  dreamTest.markSessionsProcessed(join(concurrentHome, "state.json"), cancelledResume.sessionIds);
+  await assert.rejects(commands.get("dream-resume")!.handler(cancelledResume.id, commandContext), /already accepted/);
+
+  const resumeCli = makeJob("resume-cli");
+  writeFileSync(join(resumeCli.jobDir, "state.json"), JSON.stringify({
+    id: resumeCli.id, status: "failed", completed: 0, total: 1,
+  }));
+  const resumePi = join(tempRoot, "resume-pi.sh");
+  writeFileSync(resumePi, ["#!/bin/sh", "cat >/dev/null", successfulWorkerEnd].join("\n"));
+  chmodSync(resumePi, 0o755);
+  const originalPiBin = process.env.PI_DREAM_PI_BIN;
+  process.env.PI_DREAM_PI_BIN = resumePi;
+  try {
+    await commands.get("dream-resume")!.handler(resumeCli.id, commandContext);
+    const deadline = Date.now() + 5_000;
+    while (["running", "queued"].includes(JSON.parse(readFileSync(join(resumeCli.jobDir, "state.json"), "utf8")).status)) {
+      if (Date.now() > deadline) throw new Error("The resume command did not finish.");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(JSON.parse(readFileSync(join(resumeCli.jobDir, "state.json"), "utf8")).status, "ready");
+    assert.match(notifications.at(-1)!, /resumed/);
+    assert.match(git(concurrentMemory, "log", "-1", "--format=%s", "dream/resume-cli"), /Dream batch resume-cli/);
+  } finally {
+    if (originalPiBin === undefined) delete process.env.PI_DREAM_PI_BIN;
+    else process.env.PI_DREAM_PI_BIN = originalPiBin;
+  }
+
   const silentFailure = makeJob("silent-failure");
   const silentFailPi = join(tempRoot, "silent-fail-pi.sh");
   writeFileSync(silentFailPi, "#!/bin/sh\ncat >/dev/null\nexit 1\n");
   chmodSync(silentFailPi, 0o755);
-  assert.equal((await runJob(join(silentFailure.jobDir, "manifest.json"), { piBin: silentFailPi })).status, "failed");
+  assert.equal((await runJob(join(silentFailure.jobDir, "manifest.json"), { piBin: silentFailPi, retryDelayMs: 1 })).status, "failed");
   const silentState = JSON.parse(readFileSync(join(silentFailure.jobDir, "state.json"), "utf8"));
   assert.match(silentState.error, /Worker exited with status 1\./);
   assert.match(silentState.error, /worker\.error\.log/);

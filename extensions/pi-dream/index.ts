@@ -66,6 +66,7 @@ type JobState = {
   concurrency?: number;
   currentSessionId?: string;
   runningSessionIds?: string[];
+  runnerPid?: number;
   error?: string;
   publishedCommit?: string;
   branch?: string;
@@ -379,15 +380,84 @@ async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
       version: 1, id, status: "queued", completed: 0, total: transcripts.length,
       concurrency, runningSessionIds: [], updatedAt: new Date().toISOString(),
     });
-    const child = spawn(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "runner.mjs"), join(jobDir, "manifest.json")], {
-      detached: true, stdio: "ignore",
-    });
-    child.on("error", (error) => {
-      const state = readJob<JobState>(jobDir, "state.json");
-      writeState(jobDir, { ...state, status: "failed", error: error.message, updatedAt: new Date().toISOString() });
-    });
-    child.unref();
-    notify(ctx, `Pi Dream job ${id} started. Use /dream-status ${id}.`);
+    launchRunner(jobDir, ctx);
+  });
+}
+
+function launchRunner(jobDir: string, ctx: ExtensionContext, resume = false): void {
+  const state = readJob<JobState>(jobDir, "state.json");
+  writeState(jobDir, { ...state, status: "queued", runnerPid: undefined,
+    runningSessionIds: [], error: undefined, updatedAt: new Date().toISOString() });
+  const child = spawn(process.execPath, [
+    join(dirname(fileURLToPath(import.meta.url)), "runner.mjs"),
+    join(jobDir, "manifest.json"), ...(resume ? ["--resume"] : []),
+  ], { detached: true, stdio: "ignore" });
+  writeState(jobDir, { ...readJob<JobState>(jobDir, "state.json"), runnerPid: child.pid });
+  child.on("error", (error) => {
+    const current = readJob<JobState>(jobDir, "state.json");
+    writeState(jobDir, { ...current, status: "failed", runnerPid: undefined,
+      error: error.message, updatedAt: new Date().toISOString() });
+  });
+  child.unref();
+  notify(ctx, `Pi Dream job ${state.id} ${resume ? "resumed" : "started"}. Use /dream-status ${state.id}.`);
+}
+
+function assertResumable(home: string, jobDir: string, ownsRunnerLock = false): void {
+  const state = readJob<JobState>(jobDir, "state.json");
+  if (!["failed", "queued", "running"].includes(state.status)) {
+    throw new Error(`The job is ${state.status} and cannot resume.`);
+  }
+  if (!ownsRunnerLock && existsSync(join(jobDir, ".runner-lock"))) {
+    throw new Error("The runner lock exists. Check for an active process before removing a stale lock.");
+  }
+  if (state.runnerPid) {
+    try {
+      process.kill(state.runnerPid, 0);
+      throw new Error(`Runner process ${state.runnerPid} is still active.`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  }
+  const manifest = readJob<JobManifest>(jobDir, "manifest.json");
+  if (manifest.version !== 2) throw new Error("Only version 2 jobs support resume.");
+  const sessions = new Set(manifest.sessionIds);
+  const processed = loadProcessedSessions(join(home, "state.json"));
+  if (processed.some((id: string) => sessions.has(id))) {
+    throw new Error("This job contains sessions that another job already accepted.");
+  }
+  for (const otherDir of jobDirectories(home)) {
+    if (otherDir === jobDir) continue;
+    const otherState = readJob<JobState>(otherDir, "state.json");
+    if (!["queued", "running", "ready"].includes(otherState.status)) continue;
+    const other = readJob<JobManifest>(otherDir, "manifest.json");
+    if (other.sessionIds.some((id) => sessions.has(id))) {
+      throw new Error(`Job ${other.id} already reserves sessions from this job.`);
+    }
+  }
+}
+
+async function resumeDream(args: string, ctx: ExtensionContext): Promise<void> {
+  const home = dreamHome();
+  const dir = selectJob(home, args);
+  if (!dir) return notify(ctx, "No Pi Dream job exists.");
+  if (!ctx.hasUI) return notify(ctx, "Pi Dream needs an interactive confirmation.", "error");
+  await withLock(join(home, ".state-lock"), () => {
+    reconcileJobs(home);
+    assertResumable(home, dir);
+  });
+  const manifest = readJob<JobManifest>(dir, "manifest.json");
+  const approved = await ctx.ui.confirm("Resume Pi Dream?", [
+    `Resume job ${manifest.id} with ${manifest.model}?`,
+    "The runner will keep valid completed sessions and send unfinished transcripts to this provider again.",
+    "Failed consolidation will restart from a separate candidate. Accepted memory will not change.",
+  ].join("\n"));
+  if (!approved) return;
+  await withLock(join(home, ".state-lock"), async () => {
+    reconcileJobs(home);
+    await withLock(join(dir, ".runner-lock"), () => {
+      assertResumable(home, dir, true);
+      launchRunner(dir, ctx, true);
+    }, 0);
   });
 }
 
@@ -529,6 +599,11 @@ export default function piDream(pi: ExtensionAPI): void {
     handler: (args, ctx) => startDream(pi, args, ctx),
   });
 
+  pi.registerCommand("dream-resume", {
+    description: "Resume unfinished work: /dream-resume [job-id]",
+    handler: (args, ctx) => resumeDream(args, ctx),
+  });
+
   pi.registerCommand("dream-status", {
     description: "Show project coverage and worker progress: /dream-status [job-id]",
     handler: async (args, ctx) => {
@@ -612,5 +687,5 @@ export const __test__ = {
   applyReviewBranch, buildMemoryIndex, buildTranscript, createCandidateSnapshot,
   initializeMemoryStore, loadProcessedSessions, markSessionsProcessed,
   parseBatchCount, redactTranscript, availableSessions, reconcileJobs, publishJob,
-  selectJob, workerExtensions, clipMiddle, scopeMatches,
+  selectJob, workerExtensions, clipMiddle, scopeMatches, assertResumable,
 };

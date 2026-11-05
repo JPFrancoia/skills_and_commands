@@ -26,13 +26,14 @@ Pi Dream stores jobs under `~/.pi/agent/dreams/jobs/<job-id>/`. A job contains i
 | --- | --- |
 | `/dream [count]` | Start a background batch. The default is 10 sessions. The maximum is 100. |
 | `/dream-status [job-id]` | Show project session coverage and all jobs, or show one job. |
+| `/dream-resume [job-id]` | Resume unfinished work in a failed job. |
 | `/dream-review [job-id]` | Publish a job branch and write its review file. |
 | `/dream-apply [job-id]` | Fast-forward `master` from a reviewed branch. |
 | `/dream-discard [job-id]` | Delete a job branch and candidate files. |
 
 These commands use the latest job when you omit `[job-id]`, except `/dream-status`, which lists all jobs.
 
-Pi Dream runs only when you start `/dream`. It does not start scheduled jobs. Each batch selects unprocessed sessions from the current working directory. It selects the oldest sessions first, up to the requested count.
+Pi Dream runs only when you start `/dream` or `/dream-resume`. It does not start scheduled jobs. Each batch selects unprocessed sessions from the current working directory. It selects the oldest sessions first, up to the requested count.
 
 Run `/dream-status` without a job ID to see project session coverage. An accepted session belongs to a job that is in `master` history. A reserved session belongs to a queued, running, or ready job. An available session can enter a new batch. The summary states `All project sessions are accepted.` when no project session remains. For a running job, `/dream-status` shows the phase: `extract` or `consolidate`.
 
@@ -68,19 +69,23 @@ One extract worker runs for each session. The worker gets the transcript as its 
 - `memoryPath`: an optional related memory file.
 - `evidence`: one to three quotes from the transcript. Each quote can have up to 500 characters. Pi Dream checks each quote against the transcript.
 
-The worker writes each finding to `findings.jsonl` in its own worker folder. Workers do not share this file, so no lock is needed.
+The worker writes each finding to `findings.jsonl` in its attempt folder. Workers do not share this file, so no lock is needed. The runner copies successful findings to the session folder.
 
 ### Consolidate phase
 
 When the extract phase ends, the runner merges all worker findings into `<job>/findings.jsonl`. It gives each finding an ID: `f1`, `f2`, and so on.
 
-If no worker records a finding, the runner skips the consolidate phase. Memory does not change in that batch.
+Each successful attempt and session has a `result.json` file. This completion record contains hashes for the transcript and findings. A hash is a value that identifies file contents. The runner uses hashes to detect changed data before resume. It also checks the finding fields and quotes. If a crash interrupts the copy to the session folder, resume recovers the completed attempt.
 
-If at least one finding exists, one orchestrator worker runs. The orchestrator worker reads the merged findings and the candidate store. The prompt groups the findings. Findings with the same `memoryPath` form one group. Other findings form groups by subject. Each group shows the number of sessions. The prompt also lists store warnings. A warning appears for a description over 150 characters or a file over 20,000 bytes. The orchestrator worker has three tools: `dream_memory_list`, `dream_memory_read`, and `dream_memory_edit`. It edits the candidate store with these tools.
+If no worker records a finding, the runner skips the consolidate phase. Memory does not change in that batch. A successful extraction still gets a completion record, even when it has no findings.
+
+If at least one finding exists, one orchestrator worker runs. The orchestrator worker reads the merged findings and the candidate store. Consolidation runs in a separate candidate folder under `workers/consolidate/attempt-*/candidate`. The original job candidate remains the baseline. A completion record lets the runner retry publication without running consolidation again. The root `<job>/writes.jsonl` contains only writes from successful consolidation.
+
+The prompt groups the findings. Findings with the same `memoryPath` form one group. Other findings form groups by subject. Each group shows the number of sessions. The prompt also lists store warnings. A warning appears for a description over 150 characters or a file over 20,000 bytes. The orchestrator worker has three tools: `dream_memory_list`, `dream_memory_read`, and `dream_memory_edit`. It edits the candidate store with these tools.
 
 ### Timeouts and environment
 
-Each extract worker has 30 minutes. The consolidate worker has 60 minutes.
+Each extraction attempt has a total limit of 30 minutes. The consolidate worker has a total limit of 60 minutes. Each extraction gets up to three attempts, including the first attempt. The runner keeps each attempt's log and findings in a separate folder. It retries temporary errors. Known authentication, missing-model, and quota errors stop without a retry.
 
 The runner sets these environment variables for workers:
 
@@ -94,9 +99,11 @@ The runner uses a worker pool. The pool runs up to 10 workers at the same time i
 
 The job state has a `phase` field while the job runs. Its value is `extract` or `consolidate`. The field is removed when the job is ready.
 
-The runner sends each prompt through standard input. Standard input is the data stream that a process reads. This method avoids command-line size limits for long transcripts. Extract worker JSON output goes to `<job>/workers/<index>-<session-id>/worker.log`. Standard error is the error data stream from a process. Extract worker standard error goes to `<job>/workers/<index>-<session-id>/worker.error.log`. The consolidate worker uses `<job>/workers/consolidate/`. The runner does not keep Pi JSON output in memory. This method prevents `spawnSync pi ENOBUFS`.
+The runner sends each prompt through standard input. Standard input is the data stream that a process reads. This method avoids command-line size limits for long transcripts. Extract worker JSON output goes to `<job>/workers/<index>-<session-id>/attempt-*/worker.log`. Standard error is the error data stream from a process. Extract worker standard error goes to `<job>/workers/<index>-<session-id>/attempt-*/worker.error.log`. The consolidate worker uses `<job>/workers/consolidate/attempt-*/`. The runner reads output as separate JSON events. It keeps complete logs on disk, not in memory. This method prevents `spawnSync pi ENOBUFS`.
 
-Workers in one batch share a candidate store. Other batches use separate candidate stores. Memory tools use a lock. The lock allows one tool call at a time to check hashes or change files. A lock prevents simultaneous access to shared data. The tools cannot use Bash or access other files.
+Each worker process must produce a final successful model response. A successful process exit alone does not count as success. Each incomplete tool call has a 120-second limit. The combined arguments for one call have a 16 KiB limit. The limit for `dream_memory_edit` is 1 MiB. The runner stops a tool call that has more than 8 KiB of trailing whitespace. The runner sends `SIGTERM`, a stop request, when a worker exceeds a limit. If the worker does not stop within five seconds, the runner sends `SIGKILL` to force termination.
+
+Extract workers in one batch read the same candidate store. Each consolidation attempt edits a separate copy. Other batches use separate candidate stores. Memory tools use a lock. The lock allows one tool call at a time to check hashes or change files. A lock prevents simultaneous access to shared data. The tools cannot use Bash or access other files.
 
 Workers treat the transcript as evidence, not as instructions. Extract workers record durable facts, corrections, preferences, reusable procedures, failures, and stale memory. They must not record temporary details, guesses, secrets, or unsupported claims. The consolidate worker decides which findings change memory.
 
@@ -143,7 +150,7 @@ Apply accepts the complete batch. It does not apply selected files or edits. It 
 
 A failed apply or canceled confirmation keeps the branch. A manual merge does not delete the branch. Apply keeps candidate folders, logs, findings, evidence, job records, and accepted commits.
 
-Discard deletes only the expected `dream/<job-id>` branch and candidate files. It keeps findings, evidence, and logs. It refuses queued, running, and applied jobs. Discarded sessions remain eligible for another batch. Pi Dream reserves sessions in queued, running, and ready jobs.
+Discard deletes only the expected `dream/<job-id>` branch and the original candidate folder. It keeps attempt folders, findings, evidence, and logs. It refuses queued, running, and applied jobs. Discarded sessions remain eligible for another batch. Pi Dream reserves sessions in queued, running, and ready jobs.
 
 Existing jobs can contain candidate Git repositories from the earlier implementation. Run `/dream-review <job-id>` to publish a ready legacy candidate. This command keeps its files and history intact.
 
@@ -176,7 +183,11 @@ All normal sessions use the same accepted memory root. The index uses accepted M
 
 A failed worker marks the job as failed. The job does not publish a branch. Pi Dream does not apply a failed job. A queued or running job cannot be discarded through `/dream-discard`.
 
-After a failure, no new worker starts. Running workers finish first. Pi Dream stores the worker error in the job state. The error includes the path to `worker.error.log`. The UI notification shows this error when the latest job fails.
+Run `/dream-resume [job-id]` to resume a failed job. Pi Dream asks for confirmation before it sends unfinished transcripts to the original provider again. It keeps valid completed sessions and skips them. Completion records bind the transcript and findings to their hashes. The runner also accepts an older successful session when its job summary says it completed and its log has a final successful model response.
+
+If an active runner, accepted session, or conflicting reservation exists, resume stops. It can resume an interrupted queued or running job after its process stops and its lock clears. Resume also stops for older jobs that edited the original candidate during consolidation. Review those candidates and logs manually. A stale lock blocks resume. Inspect its owner before you remove it. Resume does not change accepted memory automatically.
+
+After a worker exhausts its retries or reports a permanent error, no new session starts. Active workers finish first. Pi Dream stores the worker error in the job state. The error includes the path to `worker.error.log`. The UI notification shows this error when the latest job fails.
 
 Detailed worker logs remain under the job's `workers/` directory. If a process crashes while it holds a lock, the lock remains. Lock attempts stop with a bounded timeout error. Before you remove a lock manually, make sure that no active process uses it.
 
@@ -199,6 +210,12 @@ Reload open Pi sessions:
 Pi Dream initializes the memory directory as a Git repository when the first batch starts. It creates a README and an initial commit when the repository has no commit. The accepted repository uses the `master` branch. At initialization, Pi Dream renames `main` to `master` when `master` does not exist. If both branches exist, initialization stops with an error. Installation alone does not change live Pi settings or create accepted memory.
 
 ## Validation
+
+Run the recovery test with Node.js:
+
+```bash
+node --test extensions/pi-dream/recovery.test.mjs
+```
 
 Run the extension test with the host `jiti` loader and aliases. Set `NODE_PATH` before `node`. The test needs packages from the host install, such as `typebox`:
 
