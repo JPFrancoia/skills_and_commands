@@ -1,10 +1,8 @@
-# docs/CONTEXT.md Format
+# ./GLOSSARY.md Format
 
-`docs/CONTEXT.md` is the only supported context file location. It is a project glossary, not a plan, spec, or implementation note.
+`./GLOSSARY.md` is the project glossary at the project root. Keep only project terms, definitions, and relationships in this file.
 
-This file is allowed to exist while a plan is still being discussed because terminology decisions affect the plan. Implementation decisions still belong in `plans/<topic>-plan.md`.
-
-No other context file location is supported.
+This file can exist during planning because agreed terms affect the plan. Record implementation decisions in `plans/<topic>-plan.md`.
 
 ## Structure
 

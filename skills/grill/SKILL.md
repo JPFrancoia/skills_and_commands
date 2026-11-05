@@ -1,17 +1,17 @@
 ---
 name: grill
-description: Grill implementation plans one question at a time, record answers in plans/<topic>-plan.md, and align terminology with docs/CONTEXT.md. Use when the user wants to discuss, stress-test, or refine a plan.
+description: Review implementation plans with grouped questions, record answers in plans/<topic>-plan.md, and align terms with ./GLOSSARY.md. Use when the user wants to discuss, stress-test, or refine a plan.
 ---
 
 <what-to-do>
 
-Interview me about the plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
+Review each part of the plan. Finish when every high-value question has an accepted answer or an explicit reason to remain open.
 
-Ask the questions one at a time, waiting for feedback on each question before continuing.
+A batch is a group of questions in one tool call. Ask up to four independent questions per batch. If a question depends on an earlier answer, wait for that answer before asking it.
 
-If a question can be answered by exploring the codebase, explore the codebase instead.
+If code or documentation can answer a question, inspect them instead. For each user question, provide your recommended answer.
 
-Every accepted answer is a plan decision. Record it in the active plan before asking the next question.
+After each batch, record all accepted answers in the active plan. Check the affected code and documentation together before asking the next batch.
 
 </what-to-do>
 
@@ -28,18 +28,19 @@ Before asking plan questions, establish the active plan file:
 
 Use this wording:
 
-> "I found N initial high-value questions. I'll ask them one at a time. This count may change if your answers reveal new ambiguity."
+> I found N initial high-value questions. I will group independent questions, up to four per round. The count can change with your answers.
 
 Treat this as a live estimate, not a fixed queue.
 
 The active plan is the durable record for the discussion. Do not leave decisions only in chat.
 
-When the user answers a question:
+When the user answers a batch:
 
-1. Record the answer immediately in the active plan.
-2. Add or update a decision log entry with the question, accepted answer, recommendation if relevant, date, and rationale.
-3. Update the affected plan sections, assumptions, risks, checklist items, or file-by-file impact so the plan remains implementation-ready.
-4. Then ask the next question.
+1. Record each accepted answer in the active plan, with its question, recommendation, date, and reason.
+2. Update the affected plan sections, assumptions, risks, checklist items, and file-by-file impact together.
+3. Check changed assumptions against the affected code and documentation once for the batch. Reuse earlier evidence for unchanged parts.
+4. Keep unanswered questions open. If answers conflict, ask a focused follow-up instead of choosing silently.
+5. Select the next independent questions from the remaining open decisions.
 
 If the user's answer changes an earlier decision, update the old plan text instead of appending contradictory guidance. Keep enough history to explain the change.
 
@@ -49,46 +50,47 @@ During codebase exploration, also look for existing documentation:
 
 ### File structure
 
-Repos use a single glossary at `docs/CONTEXT.md`:
+Use one glossary at `./GLOSSARY.md`, relative to the project root:
 
 ```
 /
-├── docs/
-│   └── CONTEXT.md
+├── GLOSSARY.md
 ├── plans/
 │   └── feature-name-plan.md
 └── src/
 ```
 
-No other context file location is supported.
+`./GLOSSARY.md` can exist during planning because agreed terms shape the plan.
 
-`docs/CONTEXT.md` is the glossary exception to the usual implemented-only docs rule: it may be created during planning because terminology decisions shape the plan.
-
-Create files lazily - only when you have something to write. If no `docs/CONTEXT.md` exists, create it when the first term is resolved.
+If `./GLOSSARY.md` does not exist, create it when the first term is resolved.
 
 ## During the session
 
 ### Use the question tool
 
-When `ask_user_question` is available, you must use it for every grill question. Never write a grill question as plain text while this tool is available. Ask in plain text only when the tool is unavailable.
+When `ask_user_question` is available, put each batch in one call through its `questions` array. Ask in plain text only when the tool is unavailable.
 
-Provide two to four concise answer options. Put the recommended answer first and append `(Recommended)` to its label.
+Use two to four concise answer options per question. Put the recommended answer first and append `(Recommended)` to its label.
 
-### Ask exactly one question
+### Group independent questions
 
-Ask one and only one question per turn. Do not bundle multiple decisions into one prompt.
+Ask all ready questions together, up to four per call. Each question must address one decision and remain answerable without another answer from that batch. If more than four questions are ready, continue in later batches.
+
+Before the first batch, inspect the relevant code, documentation, and glossary together. For later batches, reuse the checks from the previous batch. Ask only questions that still need the user's decision.
 
 Each question must include:
 
 - `Progress`: the current question number and current estimate, such as `Question 1/6`.
 - `Question`: the single decision needed.
 - `Recommended answer`: the answer you recommend.
-- `Rationale`: why that answer is preferred, grounded in the plan, docs, glossary, code, or concrete scenarios.
-- `Capture target`: the plan section or `docs/CONTEXT.md` entry that will be updated if accepted.
+- `Rationale`: why that answer is preferred, based on the plan, docs, glossary, code, or concrete scenarios.
+- `Capture target`: the plan section or `./GLOSSARY.md` entry that will be updated if accepted.
+
+Place these details in the question text and option descriptions. Use the header for a short topic label.
 
 ### Challenge against the glossary
 
-When the user uses a term that conflicts with the existing language in `docs/CONTEXT.md`, call it out immediately. "Your glossary defines 'cancellation' as X, but you seem to mean Y - which is it?"
+When the user uses a term that conflicts with the existing language in `./GLOSSARY.md`, call it out immediately. "Your glossary defines 'cancellation' as X, but you seem to mean Y - which is it?"
 
 ### Sharpen fuzzy language
 
@@ -102,11 +104,11 @@ When domain relationships are being discussed, stress-test them with specific sc
 
 When the user states how something works, check whether the code agrees. If you find a contradiction, surface it: "Your code cancels entire Orders, but you just said partial cancellation is possible - which is right?"
 
-### Update docs/CONTEXT.md inline
+### Update ./GLOSSARY.md inline
 
-When a term is resolved, update `docs/CONTEXT.md` right there. Don't batch these up - capture them as they happen. Use the format in [CONTEXT-FORMAT.md](./CONTEXT-FORMAT.md).
+After each batch, update all resolved terms in `./GLOSSARY.md` together. Use the format in [GLOSSARY-FORMAT.md](./GLOSSARY-FORMAT.md).
 
-`docs/CONTEXT.md` should be totally devoid of implementation details. Do not treat `docs/CONTEXT.md` as a spec, a scratch pad, or a repository for implementation decisions. It is a glossary and nothing else.
+Keep only project terms, definitions, and relationships in `./GLOSSARY.md`. Record implementation decisions in the active plan.
 
 ### Keep decisions in plans
 
@@ -114,8 +116,8 @@ Implementation decisions, trade-offs, rejected alternatives, assumptions, and op
 
 ## Guardrails
 
-- Ask exactly one question at a time.
-- Estimate the initial number of high-value unanswered questions before asking the first question.
+- Group ready questions before asking. Separate questions that depend on earlier answers.
+- Estimate the initial number of high-value unanswered questions before asking the first batch.
 - Include `Progress` with every grill question.
 - Always provide a recommended answer and rationale with each question.
 
