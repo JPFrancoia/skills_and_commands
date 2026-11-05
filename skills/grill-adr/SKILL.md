@@ -1,15 +1,17 @@
 ---
 name: grill-adr
-description: Grill ADR drafts one question at a time, capture accepted answers, and validate decisions against project evidence and terminology. Use when the user wants to stress-test, refine, or challenge an ADR.
+description: Review ADR drafts with grouped questions, record accepted answers, and check decisions against project evidence and ./GLOSSARY.md. Use when the user wants to review an ADR.
 ---
 
 # Grill ADR
 
-Grill an ADR in a structured mode. This is for sharpening architecture decision records, not implementation. Ask one high-value question at a time, recommend an answer, capture accepted answers into the right artifact immediately, validate the ADR manually, then continue.
+Review an architecture decision record (ADR). Finish when every high-value question has an accepted answer or an explicit reason to remain open.
 
-**IMPORTANT: Grill mode is for sharpening an ADR, not implementing it.** You may read files, search code, inspect docs, update Draft ADRs, and update `docs/CONTEXT.md` when the user accepts terminology. You must never write application code, implement features, or modify implementation files. If the user asks you to implement something, remind them to leave grill mode and implement only after the ADR work is complete.
+A batch is a group of questions in one tool call. Ask up to four independent questions per batch. If a question depends on an earlier answer, wait for that answer before asking it.
 
-**Input**: The user's request may include:
+Keep work within ADR review. Read files, search code, inspect docs, and update Draft ADRs and accepted glossary terms. Do not write application code or modify implementation files. If the user requests implementation, ask them to leave grill mode after the ADR work is complete.
+
+**Input**: The user's request can include:
 
 - An ADR path, such as `docs/decisions-drafts/0034-example.md`.
 - An ADR number, such as `0034`.
@@ -27,7 +29,7 @@ Grill an ADR in a structured mode. This is for sharpening architecture decision 
    - `docs/adr-template.md`
    - `docs/decisions/README.md`
    - `docs/decisions-drafts/README.md`
-   - `docs/CONTEXT.md`
+   - `./GLOSSARY.md`, if it exists at the project root
 
 2. **If an ADR path or number is provided**
 
@@ -35,11 +37,11 @@ Grill an ADR in a structured mode. This is for sharpening architecture decision 
 
    - Prefer `docs/decisions-drafts/` when the same ADR number appears in multiple places.
    - If the selected ADR is in `docs/decisions/`, treat it as accepted and binding. Do not modify it unless the user explicitly asks for an accepted-ADR correction. Prefer recommending a new Draft ADR that supersedes it.
-   - Missing files are useful context; report the missing path briefly and ask one selection or creation question.
+   - If the selected ADR is missing, report its path and ask one selection or creation question.
 
 3. **If a topic is provided but no ADR exists**
 
-   Search accepted and draft ADRs for overlap. If no matching ADR exists, stay in pre-draft grill mode. Ask one question at a time and offer to create a Draft ADR only when the decision is clear enough to record.
+   Search accepted and draft ADRs for overlap. If none matches, explore the decision before creating a draft. Use the batch rules in the Grill Loop. Once the decision is clear enough to record, offer to create a Draft ADR.
 
 4. **If no ADR or topic is provided**
 
@@ -55,11 +57,13 @@ Grill an ADR in a structured mode. This is for sharpening architecture decision 
 
 6. **Estimate the initial question count**
 
-   Before asking the first grill question, inventory the initial set of high-value unanswered questions discovered from the ADR, template, docs, evidence, and code. Report only the count, not the full list, unless the user asks for it.
+   Before the first batch, list the high-value unanswered questions from the ADR, template, docs, glossary, evidence, and code.
+   Report only the count.
+   If the user requests the list, show it.
 
    Use this wording:
 
-   > "I found N initial high-value questions. I'll ask them one at a time. This count may change if your answers reveal new ambiguity."
+   > I found N initial high-value questions. I will group independent questions, up to four per round. The count can change with your answers.
 
    Treat this as a live estimate, not a fixed queue.
 
@@ -67,27 +71,37 @@ Grill an ADR in a structured mode. This is for sharpening architecture decision 
 
 ## Grill Loop
 
-Repeat until there are no high-value unanswered questions.
+Repeat until every high-value question has an accepted answer or an explicit reason to remain open.
 
 1. **Inspect before asking**
 
-   Before asking a question, determine whether the answer can be found by reading the ADR, accepted ADRs, draft ADRs, docs, evidence, or code. If it can, inspect first and use the discovered answer instead of asking. Ask only when the answer requires a decision, confirmation, prioritization, ownership judgment, or domain judgment.
+   Before the first batch, inspect the ADR, relevant accepted ADRs, drafts, docs, glossary, evidence, and code together.
+   If these sources answer a question, use that answer instead of asking the user.
+   For later batches, reuse earlier evidence for unchanged parts.
+   Ask only questions that still need the user's decision.
 
-2. **Ask exactly one question**
+2. **Group independent questions**
 
-   When `ask_user_question` is available, you must use it for every grill question. Never write a grill question as plain text while this tool is available. Ask in plain text only when the tool is unavailable.
+   Ask all ready questions together, up to four per call.
+   Each question must address one decision and remain answerable without another answer from that batch.
+   If more than four questions are ready, continue in later batches.
 
-   Provide two to four concise answer options. Put the recommended answer first and append `(Recommended)` to its label.
+   When `ask_user_question` is available, put each batch in one call through its `questions` array.
+   Ask in plain text only when the tool is unavailable.
 
-   Ask one and only one question per turn. Do not bundle multiple decisions into one prompt.
+   Provide two to four concise answer options per question.
+   Put the recommended answer first and append `(Recommended)` to its label.
 
    Each question must include:
 
    - `Progress`: the current question number and current estimate, such as `Question 1/6`.
    - `Question`: the single decision needed.
    - `Recommended answer`: the answer you recommend.
-   - `Rationale`: why that answer is preferred, grounded in the ADR, template, docs, evidence, code, or concrete scenarios.
-   - `Capture target`: the ADR section or `docs/CONTEXT.md` entry that will be updated if accepted.
+   - `Rationale`: why that answer is preferred, based on the ADR, template, docs, evidence, code, or concrete scenarios.
+   - `Capture target`: the ADR section or `./GLOSSARY.md` entry to update after acceptance.
+
+   Place these details in the question text and option descriptions.
+   Use the header for a short topic label.
 
 3. **Make questions concrete**
 
@@ -97,23 +111,31 @@ Repeat until there are no high-value unanswered questions.
 
    - Does this ADR apply to the Workspace root, one Sub-repo, or multiple Sub-repos?
    - Which accepted ADR does this supersede, if the old guidance conflicts with this decision?
-   - What should an agent do when existing implementation contradicts this draft?
+   - If existing implementation contradicts this draft, what must an agent do?
    - Which alternative is the real fallback if the chosen approach fails?
    - What evidence proves this is already implemented versus only proposed?
 
 4. **Challenge vague terms**
 
-   If the ADR uses vague or overloaded terms, check `docs/CONTEXT.md` first. If the term is already defined, use that definition and ask whether the ADR should adopt it. If the term is missing or ambiguous, recommend a precise definition and capture accepted terminology in `docs/CONTEXT.md`.
+   If the ADR uses vague terms, check `./GLOSSARY.md` first.
+   If a term conflicts with its definition, ask which meaning applies.
+   If the term is missing or ambiguous, recommend a precise definition.
+   Record accepted terms under the glossary rules in Capture Rules.
 
-5. **Wait for acceptance**
+5. **Record accepted answers**
 
-   Do not update artifacts until the user accepts the recommended answer or provides an alternative answer. Treat explicit approval such as "yes", "accept", "use that", or a direct alternative as an accepted answer. If the user rejects the recommendation without a replacement, ask one follow-up question.
+   Treat explicit approval such as "yes", "accept", "use that", or a direct alternative as an accepted answer.
+   After each batch, record all accepted answers before asking the next batch.
+   Keep unanswered questions open.
+   If answers conflict or a rejected answer has no replacement, ask a focused follow-up.
+   Update earlier decisions instead of appending contradictory guidance.
+   Keep enough history to explain the change.
 
 ---
 
 ## Capture Rules
 
-When the user accepts an answer, capture it immediately in the correct place:
+After each batch, record each accepted answer in the correct place:
 
 | Accepted Answer Type | Capture Target |
 | --- | --- |
@@ -125,24 +147,28 @@ When the user accepts an answer, capture it immediately in the correct place:
 | Source path, implementation proof, or uncertainty | `## Evidence` |
 | Future agent constraint | `## Agent Guidance` |
 | Human review question | `## Reviewer Acceptance Checks` |
-| Pure terminology | `docs/CONTEXT.md` |
+| Pure terminology | `./GLOSSARY.md` |
 
 Guidelines:
 
 - Preserve the existing ADR structure and wording as much as possible.
 - Add the smallest text that accurately records the accepted answer.
 - Keep implementation tasks out of ADRs unless they are necessary reviewer checks or agent guidance.
-- For accepted ADRs, do not edit `docs/decisions/` by default. Recommend a new Draft ADR that supersedes the accepted ADR unless the user explicitly asks for a correction.
-- For terminology, keep `docs/CONTEXT.md` terminology-only; do not add implementation choices there.
+- Use one glossary at `./GLOSSARY.md`, relative to the project root.
+- If the glossary is missing, create it when the first term is resolved.
+- Keep only project terms, definitions, and relationships in the glossary. Record architecture decisions in the ADR.
 - If a title or file path changes, update `docs/decisions-drafts/README.md` or `docs/decisions/README.md` consistently.
 
-After each ADR or terminology update, run the manual validation checklist below. Do not proceed to the next grill question until validation passes or the blocker is clearly reported.
+After each batch, check changed assumptions against affected code and docs together.
+Reuse earlier evidence for unchanged parts.
+Run the manual validation checklist once for all ADR and glossary updates in the batch.
+Continue only after validation passes or you report the blocker.
 
 ---
 
 ## Manual Validation Checklist
 
-There is no ADR CLI validator. Check these items after every capture:
+Check these items manually after each batch:
 
 - The ADR follows `docs/adr-template.md`.
 - The filename and title use the same ADR number.
@@ -155,7 +181,9 @@ There is no ADR CLI validator. Check these items after every capture:
 - The relevant ADR index links to the ADR title and file.
 - There are no duplicate draft and accepted copies of the same ADR.
 
-If validation fails, report the failure, fix only the ADR wording, structure, metadata, or index needed to satisfy the checklist, and validate again.
+If a check fails, report the failure.
+Fix only the ADR wording, structure, metadata, or index needed to satisfy the checklist.
+Run the checklist again.
 
 ---
 
@@ -173,7 +201,7 @@ High-value question categories:
 - Evidence is missing, stale, contradictory, or only proves implementation rather than intent.
 - Agent guidance is vague, unenforceable, or too implementation-specific.
 - Reviewer acceptance checks do not help a human decide whether to accept the ADR.
-- Terms conflict with `docs/CONTEXT.md` or project language.
+- Terms conflict with `./GLOSSARY.md` or project language.
 
 Avoid low-value questions:
 
@@ -187,22 +215,16 @@ Avoid low-value questions:
 
 ## Ending
 
-When there are no high-value unanswered questions left:
+When every high-value question has an accepted answer or an explicit reason to remain open:
 
 1. Summarize the accepted answers captured this session.
 2. Report the final manual validation status.
-3. Summarize remaining risks, assumptions, or low-value questions intentionally left open.
+3. Summarize remaining risks, assumptions, and open questions with their reasons.
 4. If the ADR is ready, say it is ready for human review. Do not say it is accepted unless it already lives in `docs/decisions/` with accepted status.
 
 ---
 
 ## Guardrails
 
-- Ask exactly one question at a time.
-- Estimate the initial number of high-value unanswered questions before asking the first question.
-- Always provide a recommended answer and rationale with each question.
-- Inspect artifacts, docs, evidence, or code before asking if the answer might already exist.
-- Capture accepted answers immediately in the correct ADR section or `docs/CONTEXT.md`.
-- Validate manually after each ADR or terminology update.
 - Never implement code or modify implementation files.
 - Never mark an ADR accepted without explicit human approval.
