@@ -5,74 +5,62 @@ description: Create and maintain durable implementation plans. Use before non-tr
 
 # Implementation Planning
 
-Use this skill before you implement non-trivial work.
+For these tasks, work directly without a plan:
 
-Do not create a plan for:
+- One-line fixes, typo fixes, and simple configuration changes.
+- Direct answers and read-only analysis.
+- Routine command execution.
 
-- one-line fixes
-- simple configuration changes
-- typo fixes
-- direct answers
-- read-only analysis
-- routine command execution
+## 1. Create the plan
 
-## Create the plan
+Save the plan as `plans/<topic>-plan.md` in the project root.
+Use a descriptive topic name.
+If `plans/` does not exist, create it.
+If facts about the code remain unknown, record them in the initial draft.
 
-1. Save the plan as `plans/<topic>-plan.md` in the project root.
-2. Use a descriptive topic name.
-3. Create the `plans/` directory when it does not exist.
-4. Make the initial plan exploratory when the codebase has unresolved facts.
-5. Before implementation, make the plan implementation-ready.
-6. Present the plan path and a concise, high-signal summary.
-7. Wait for user approval unless the user already approved the current scope.
+Include all eight sections:
 
-Treat `go`, `implement`, `do it`, or an equivalent direct request as approval of the current scope and latest plan.
-If the scope is clear, begin without another confirmation.
-Stop only for a security, data-loss, or consequential user-decision blocker.
+| Section | Content |
+| --- | --- |
+| Brief | Explain what changes and why the work is necessary now. Use two to four sentences in plain English. |
+| Current state / relevant context | Describe the existing behavior and relevant code. |
+| Proposed implementation | State the chosen approach. Explain its advantages and disadvantages compared with the alternatives. |
+| File-by-file impact | Name the likely files and systems. Identify their interfaces, where the systems connect. |
+| Risks and edge cases | Describe what can fail, including unusual inputs and conditions. |
+| Validation / testing | State how to check each change and what results count as success. |
+| Step-by-step execution checklist | List the implementation steps in order. |
+| Open questions / assumptions | Separate unanswered questions from assumptions, which are details accepted without evidence. |
 
-Do not write only a checklist.
+## 2. Review the plan
 
-## Required sections
+Offer the `grill` skill to challenge the plan against project documentation, terms, and existing decisions.
+If the user accepts, update the plan with the results.
 
-Include these sections unless the work is trivial:
+Before implementation, check that all these conditions hold:
 
-1. Brief
-2. Current state / relevant context
-3. Proposed implementation
-4. File-by-file impact
-5. Risks and edge cases
-6. Validation / testing
-7. Step-by-step execution checklist
-8. Open questions / assumptions
+- All eight sections contain the relevant details.
+- Every proposed change identifies the likely files or systems it affects.
+- Every checklist step states an action and the result that marks it complete.
+- Every changed behavior has a check with an expected result.
+- Every unresolved question has a safe assumption or an explicit reason to block implementation.
 
-## Plan quality
+## 3. Present the plan for approval
 
-- Be concise in wording, but cover the required details.
-- Name likely files, modules, systems, and interfaces when you can infer them.
-- State important tradeoffs and the preferred choice.
-- State uncertain details as assumptions.
-- Explain the Brief in plain English in two to four sentences.
-- State what changes and why the work is necessary now.
-- Do not use the Brief for implementation steps, task history, or generic goals.
+Present the plan path and a concise summary:
 
-When you present the plan, summarize:
+- The Brief.
+- Major decisions and affected files or systems.
+- Key risks and reasons for the chosen approach.
+- The validation approach.
+- Open questions and assumptions.
 
-- the Brief
-- major implementation decisions
-- likely files or systems affected
-- key risks and tradeoffs
-- validation approach
-- open questions and assumptions
+Follow the approval rules in the global `AGENTS.md`.
+After approval, pause only for a security risk, possible data loss, or a decision that needs the user.
 
-## Maintain the plan
+## 4. Maintain the plan
 
-- Update the plan when implementation changes material decisions or details.
-- Mark completed checklist steps as work finishes.
-- Record deviations and the reason for each deviation.
-- Keep completed plans as decision records.
-- Mark a completed plan with the completion date.
-- Never delete a plan.
-
-## Plan review
-
-For genuinely non-trivial planning work, offer the `grill` skill. Use it to challenge the plan against project documentation, terminology, and existing decisions before implementation.
+When implementation changes an important decision or detail, update the affected plan sections.
+Record each change and its reason.
+When a checklist step finishes, mark it complete.
+When all steps finish and checks pass, add the completion date.
+Keep every plan as a decision record, including completed plans.
