@@ -52,7 +52,7 @@ const { default: workerExtension, __test__: workerTest } = await import(
   "./worker-extension.ts"
 );
 const { runJob, __test__: runnerTest } = await import("./runner.mjs");
-const { withLock } = await import("./store.mjs");
+const { withLock, writeNote, availableNotes } = await import("./store.mjs");
 
 const successfulWorkerEnd = `printf '\\n%s\\n' '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}'`;
 
@@ -532,7 +532,29 @@ try {
     "dream-review",
     "dream-status",
   ]);
-  assert.deepEqual([...tools.keys()], []);
+  assert.deepEqual([...tools.keys()], ["dream_note"]);
+
+  const noteContext = {
+    cwd: tempRoot, sessionManager: { getSessionId: () => "note-session" },
+  } as unknown as ExtensionContext;
+  const noteResult = await tools.get("dream_note")!.execute("call-1", {
+    kind: "preference", subject: "reply style", statement: "Use short replies.", memoryPath: "@global/preferences.md",
+  }, undefined, undefined, noteContext);
+  const noteFiles = readdirSync(join(dreamHome, "inbox"));
+  assert.equal(noteFiles.length, 1);
+  const storedNote = JSON.parse(readFileSync(join(dreamHome, "inbox", noteFiles[0]), "utf8"));
+  assert.equal(storedNote.sessionId, "note-session");
+  assert.equal(storedNote.cwd, tempRoot);
+  assert.equal(storedNote.memoryPath, "global/preferences.md");
+  assert.equal(storedNote.kind, "preference");
+  assert.match(noteResult.content[0].text, new RegExp(`Note ${storedNote.id} recorded`));
+  await assert.rejects(tools.get("dream_note")!.execute("call-2", {
+    kind: "fact", subject: "long", statement: "x".repeat(1_001),
+  }, undefined, undefined, noteContext), /invalid/);
+  await assert.rejects(tools.get("dream_note")!.execute("call-3", {
+    kind: "fact", subject: "bad path", statement: "A fact.", memoryPath: "/etc/passwd.md",
+  }, undefined, undefined, noteContext), /invalid/);
+  assert.equal(readdirSync(join(dreamHome, "inbox")).length, 1);
 
   const originalList = SessionManager.list;
   try {
@@ -551,7 +573,7 @@ try {
           },
         },
       } as unknown as ExtensionContext);
-      assert.ok(confirmation.startsWith(`${count} session(s)`));
+      assert.ok(confirmation.startsWith(`${count} session(s) and 1 note(s)`), confirmation);
       assert.match(confirmation, /Up to 10 worker\(s\) will run at once\./);
       assert.match(confirmation, /worker model openai-codex\/gpt-test/);
       assert.match(confirmation, /orchestrator model openai-codex\/gpt-test/);
@@ -576,7 +598,7 @@ try {
   ].join("\n"));
   chmodSync(rolePi, 0o755);
   const originalOpen = SessionManager.open;
-  const savedPiBin = process.env.PI_DREAM_PI_BIN;
+  const savedRolePiBin = process.env.PI_DREAM_PI_BIN;
   try {
     process.env.PI_DREAM_HOME = roleHome;
     process.env.PI_DREAM_MEMORY_ROOT = roleMemory;
@@ -623,8 +645,8 @@ try {
     dreamSettings = { model: "openai-codex/gpt-test" };
     process.env.PI_DREAM_HOME = dreamHome;
     process.env.PI_DREAM_MEMORY_ROOT = memoryRoot;
-    if (savedPiBin === undefined) delete process.env.PI_DREAM_PI_BIN;
-    else process.env.PI_DREAM_PI_BIN = savedPiBin;
+    if (savedRolePiBin === undefined) delete process.env.PI_DREAM_PI_BIN;
+    else process.env.PI_DREAM_PI_BIN = savedRolePiBin;
   }
 
   assert.deepEqual(dreamTest.workerExtensions(pi), []);
@@ -1177,8 +1199,16 @@ try {
   git(concurrentMemory, "merge", "--ff-only", "dream/batch-a");
   dreamTest.reconcileJobs(concurrentHome);
   assert.deepEqual(dreamTest.loadProcessedSessions(join(concurrentHome, "state.json")), ["batch-a"]);
-  assert.throws(() => dreamTest.applyReviewBranch(batchB), /merge it manually/);
-  git(concurrentMemory, "-c", "user.name=Test", "-c", "user.email=test@local", "merge", "--no-edit", "dream/batch-b");
+  // Different files merge without a worker. The result is one merge commit with both parents.
+  const batchACommit = git(concurrentMemory, "rev-parse", "HEAD");
+  const batchBTip = git(concurrentMemory, "rev-parse", "dream/batch-b");
+  assert.equal(dreamTest.applyReviewBranch(batchB), "applied");
+  const mergedCommit = git(concurrentMemory, "rev-parse", "HEAD");
+  assert.equal(git(concurrentMemory, "rev-parse", "dream/batch-b"), mergedCommit);
+  assert.deepEqual(git(concurrentMemory, "rev-parse", `${mergedCommit}^1`, `${mergedCommit}^2`).split("\n"),
+    [batchACommit, batchBTip]);
+  assert.equal(git(concurrentMemory, "diff", "--name-only", batchACommit, mergedCommit), "batch-b.md");
+  assert.equal(git(concurrentMemory, "status", "--porcelain"), "");
   dreamTest.reconcileJobs(concurrentHome);
   assert.deepEqual(dreamTest.loadProcessedSessions(join(concurrentHome, "state.json")), ["batch-a", "batch-b"]);
   assert.equal(git(concurrentMemory, "branch", "--show-current"), "master");
@@ -1281,8 +1311,15 @@ try {
   writeFileSync(join(concurrentMemory, "accepted.txt"), "Another accepted commit.\n");
   git(concurrentMemory, "add", "accepted.txt");
   git(concurrentMemory, "-c", "user.name=Test", "-c", "user.email=test@local", "commit", "-m", "Advance accepted memory");
-  await assert.rejects(commands.get("dream-apply")!.handler(refused.id, commandContext), /merge it manually/);
-  assert.equal(git(concurrentMemory, "rev-parse", "dream/refused-apply"), refusedCommit);
+  // A moved master without a text conflict merges and applies in one command.
+  const advancedCommit = git(concurrentMemory, "rev-parse", "HEAD");
+  await commands.get("dream-apply")!.handler(refused.id, commandContext);
+  const refusedMerge = git(concurrentMemory, "rev-parse", "HEAD");
+  assert.deepEqual(git(concurrentMemory, "rev-parse", `${refusedMerge}^1`, `${refusedMerge}^2`).split("\n"),
+    [advancedCommit, refusedCommit]);
+  assert.equal(JSON.parse(readFileSync(join(refused.jobDir, "state.json"), "utf8")).status, "applied");
+  assert.match(notifications.at(-1)!, /Applied Pi Dream job refused-apply\./);
+  assert.throws(() => git(concurrentMemory, "rev-parse", "--verify", "refs/heads/dream/refused-apply"));
 
   const cleanupFailure = makeJob("cleanup-failure");
   const cleanupCommit = dreamTest.publishJob(cleanupFailure);
@@ -1512,6 +1549,181 @@ try {
   symlinkSync(outside, join(symlinkJob.candidateRoot, "escape"), "dir");
   assert.throws(() => dreamTest.publishJob(symlinkJob), /symlink/);
   assert.equal(git(concurrentMemory, "branch", "--show-current"), "master");
+
+  async function waitForJob(jobDir: string): Promise<{ status: string; error?: string; publishedCommit?: string }> {
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      const state = JSON.parse(readFileSync(join(jobDir, "state.json"), "utf8"));
+      if (!["queued", "running"].includes(state.status)) return state;
+      if (Date.now() > deadline) throw new Error(`The job ${jobDir} did not finish.`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  function readState(jobDir: string) {
+    return JSON.parse(readFileSync(join(jobDir, "state.json"), "utf8"));
+  }
+
+  // Extraction never touches the candidate, so a moved master refreshes it before consolidation.
+  const refresh = makeJob("refresh");
+  const refreshPi = join(tempRoot, "refresh-pi.sh");
+  writeFileSync(refreshPi, [
+    "#!/bin/sh", "cat >/dev/null",
+    `printf -- "---\\ndescription: Moved master.\\n---\\n\\nNew.\\n" > "${concurrentMemory}/moved.md"`,
+    `git -C "${concurrentMemory}" add moved.md`,
+    `git -C "${concurrentMemory}" -c user.name=Test -c user.email=test@local commit -q -m "Move master"`,
+    successfulWorkerEnd,
+  ].join("\n"));
+  chmodSync(refreshPi, 0o755);
+  assert.deepEqual(await runJob(join(refresh.jobDir, "manifest.json"), { piBin: refreshPi, timeoutMs: 5_000 }), { status: "ready" });
+  const movedMaster = git(concurrentMemory, "rev-parse", "master");
+  assert.notEqual(movedMaster, refresh.base.baseCommit);
+  assert.equal(JSON.parse(readFileSync(join(refresh.jobDir, "manifest.json"), "utf8")).base.baseCommit, movedMaster);
+  assert.equal(git(concurrentMemory, "rev-parse", "dream/refresh^"), movedMaster);
+  assert.equal(existsSync(join(refresh.candidateRoot, "moved.md")), true);
+
+  // Two batches change the same line. A worker resolves the conflict before the user applies.
+  const conflictA = makeJob("conflict-a");
+  const conflictB = makeJob("conflict-b");
+  for (const [job, text] of [[conflictA, "Side A."], [conflictB, "Side B."]] as const) {
+    writeFileSync(join(job.candidateRoot, "conflict.md"), `---\ndescription: Conflicting memory.\n---\n\n${text}\n`);
+    const commit = dreamTest.publishJob(job);
+    writeFileSync(join(job.jobDir, "state.json"), JSON.stringify({
+      id: job.id, status: "ready", completed: 1, total: 1, publishedCommit: commit, branch: `dream/${job.id}`,
+    }));
+  }
+  await commands.get("dream-apply")!.handler("conflict-a", commandContext);
+  assert.equal(readState(conflictA.jobDir).status, "applied");
+  const masterAfterA = git(concurrentMemory, "rev-parse", "HEAD");
+  const conflictBTip = git(concurrentMemory, "rev-parse", "dream/conflict-b");
+  const badMergePi = join(tempRoot, "bad-merge-pi.sh");
+  writeFileSync(badMergePi, ["#!/bin/sh", 'cat > "$PI_DREAM_PARENT_JOB_DIR/prompt-$PI_DREAM_PHASE"', successfulWorkerEnd].join("\n"));
+  chmodSync(badMergePi, 0o755);
+  const mergePi = join(tempRoot, "merge-pi.sh");
+  writeFileSync(mergePi, [
+    "#!/bin/sh", "cat >/dev/null",
+    'printf -- "---\\ndescription: Conflicting memory.\\n---\\n\\nSide A.\\nSide B.\\n" > "$PI_DREAM_MEMORY_ROOT/conflict.md"',
+    successfulWorkerEnd,
+  ].join("\n"));
+  chmodSync(mergePi, 0o755);
+  const savedPiBin = process.env.PI_DREAM_PI_BIN;
+  try {
+    process.env.PI_DREAM_PI_BIN = badMergePi;
+    await commands.get("dream-apply")!.handler("conflict-b", commandContext);
+    assert.match(notifications.at(-1)!, /master moved\. A worker resolves the merge for job conflict-b\./);
+    const failedMerge = await waitForJob(conflictB.jobDir);
+    assert.equal(failedMerge.status, "failed");
+    assert.match(failedMerge.error!, /Conflict markers remain in conflict\.md\./);
+    assert.equal(git(concurrentMemory, "rev-parse", "dream/conflict-b"), conflictBTip);
+    assert.equal(git(concurrentMemory, "rev-parse", "HEAD"), masterAfterA);
+    const mergePromptText = readFileSync(join(conflictB.jobDir, "prompt-merge"), "utf8");
+    assert.match(mergePromptText, /master holds newer accepted memory/);
+    assert.match(mergePromptText, /## Conflicted files\n\n- conflict\.md\n/);
+    const mergeAttempts = readdirSync(join(conflictB.jobDir, "workers", "merge")).filter((name) => name.startsWith("attempt-"));
+    assert.equal(mergeAttempts.length, 1);
+    const conflicted = readFileSync(join(conflictB.jobDir, "workers", "merge", mergeAttempts[0], "candidate", "conflict.md"), "utf8");
+    assert.match(conflicted, /^<<<<<<< /m);
+    assert.match(conflicted, /^\|\|\|\|\|\|\| /m);
+    assert.match(conflicted, /^>>>>>>> /m);
+    assert.match(conflicted, /Side A\.[\s\S]*Side B\./);
+    assert.throws(() => runnerTest.rejectConflictMarkers(join(conflictB.jobDir, "workers", "merge", mergeAttempts[0], "candidate")), /Conflict markers remain/);
+
+    process.env.PI_DREAM_PI_BIN = mergePi;
+    await commands.get("dream-resume")!.handler("conflict-b", commandContext);
+    const resolved = await waitForJob(conflictB.jobDir);
+    assert.equal(resolved.status, "ready", resolved.error);
+    const resolvedTip = git(concurrentMemory, "rev-parse", "dream/conflict-b");
+    assert.equal(resolved.publishedCommit, resolvedTip);
+    assert.deepEqual(git(concurrentMemory, "rev-parse", `${resolvedTip}^1`, `${resolvedTip}^2`).split("\n"), [masterAfterA, conflictBTip]);
+    assert.equal(git(concurrentMemory, "rev-parse", "HEAD"), masterAfterA);
+    await commands.get("dream-review")!.handler("conflict-b", commandContext);
+    const mergeReport = readFileSync(join(conflictB.jobDir, "diff.md"), "utf8");
+    assert.match(mergeReport, /^\+Side B\.$/m);
+    assert.doesNotMatch(mergeReport, /^-Side A\.$/m);
+    assert.match(mergeReport, /Merge master into dream\/conflict-b/);
+    await commands.get("dream-apply")!.handler("conflict-b", commandContext);
+    assert.equal(git(concurrentMemory, "rev-parse", "HEAD"), resolvedTip);
+    assert.equal(readFileSync(join(concurrentMemory, "conflict.md"), "utf8"), "---\ndescription: Conflicting memory.\n---\n\nSide A.\nSide B.\n");
+    assert.equal(readState(conflictB.jobDir).status, "applied");
+    assert.equal(git(concurrentMemory, "status", "--porcelain"), "");
+  } finally {
+    if (savedPiBin === undefined) delete process.env.PI_DREAM_PI_BIN;
+    else process.env.PI_DREAM_PI_BIN = savedPiBin;
+  }
+  const underline = join(tempRoot, "underline");
+  mkdirSync(underline);
+  writeFileSync(join(underline, "h.md"), "---\ndescription: Heading underline.\n---\n\nTitle\n=======\n");
+  runnerTest.rejectConflictMarkers(underline);
+
+  // Notes: prompt section, scope, note-only batches, reservation, and inbox cleanup.
+  const noteHome = join(tempRoot, "note-home");
+  process.env.PI_DREAM_HOME = noteHome;
+  const localNote = writeNote(noteHome, { kind: "fact", subject: "project port", statement: "The API listens on port 8080.", cwd: tempRoot, sessionId: "s-local" });
+  const otherNote = writeNote(noteHome, { kind: "fact", subject: "other project", statement: "Hidden elsewhere.", cwd: join(tempRoot, "other"), sessionId: "s-other" });
+  const globalNote = writeNote(noteHome, { kind: "preference", subject: "reply style", statement: "Use short\nreplies.", sessionId: "s-global" });
+  writeFileSync(join(noteHome, "inbox", "broken.json"), "{not json");
+  writeFileSync(join(noteHome, "inbox", "bad-kind.json"), JSON.stringify({ ...globalNote, id: "bad-kind", kind: "rumor" }));
+  const noteEvent = { systemPromptOptions: { sections: {} as Record<string, string> } };
+  events.get("before_agent_start")!(noteEvent, { cwd: tempRoot } as ExtensionContext);
+  const notePrompt = noteEvent.systemPromptOptions.sections["dream-memory"];
+  assert.match(notePrompt, /Call dream_note when you learn a durable fact/);
+  assert.match(notePrompt, /Pending memory notes \(not yet consolidated\)\. Past sessions proposed these\. They are not accepted memory\./);
+  assert.match(notePrompt, /^- \[fact\] project port: The API listens on port 8080\.$/m);
+  assert.match(notePrompt, /^- \[preference\] reply style: Use short replies\.$/m);
+  assert.doesNotMatch(notePrompt, /Hidden elsewhere|rumor/);
+  const manyNotes = Array.from({ length: 60 }, (_, index) => ({ ...globalNote, id: `n${index}`, statement: `Statement ${index}.` }));
+  assert.equal(dreamTest.buildNoteIndex(manyNotes, 50, 100_000).split("\n").length, 52);
+  assert.match(dreamTest.buildNoteIndex(manyNotes, 50, 100_000), /10 more note\(s\) are not listed\.$/);
+  assert.match(dreamTest.buildNoteIndex(manyNotes, 50, 200), /\d+ more note\(s\) are not listed\.$/);
+  assert.equal(dreamTest.buildNoteIndex([], 50, 200), "");
+
+  function noteJob(id: string, noteIds: string[]) {
+    const dir = join(noteHome, "jobs", id);
+    const candidate = join(dir, "candidate");
+    const base = dreamTest.createCandidateSnapshot(concurrentMemory, candidate);
+    const manifest = {
+      version: 2, id, cwd: tempRoot, createdAt: "2026-11-06T12:00:00.000Z", model: "test/model", concurrency: 1,
+      memoryRoot: concurrentMemory, candidateRoot: candidate, jobDir: dir,
+      workerExtension: join(tempRoot, "worker-extension.ts"), sessionIds: [], noteIds, transcripts: [], base,
+    };
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+    writeFileSync(join(dir, "state.json"), JSON.stringify({ version: 1, id, status: "queued", completed: 0, total: 0 }));
+    return manifest;
+  }
+  const noteOnly = noteJob("note-only", [localNote.id, globalNote.id]);
+  writeFileSync(join(noteOnly.jobDir, "notes.jsonl"), `${JSON.stringify(localNote)}\n${JSON.stringify(globalNote)}\n`);
+  assert.deepEqual(availableNotes(noteHome, tempRoot).map((note: { id: string }) => note.id), []);
+  assert.deepEqual(availableNotes(noteHome, join(tempRoot, "other")).map((note: { id: string }) => note.id), [otherNote.id]);
+  const notePi = join(tempRoot, "note-pi.sh");
+  writeFileSync(notePi, [
+    "#!/bin/sh", 'cat > "$PI_DREAM_PARENT_JOB_DIR/prompt-$PI_DREAM_PHASE"',
+    'printf -- "---\\ndescription: From notes.\\n---\\n\\nPort 8080.\\n" > "$PI_DREAM_MEMORY_ROOT/notes.md"',
+    successfulWorkerEnd,
+  ].join("\n"));
+  chmodSync(notePi, 0o755);
+  assert.deepEqual(await runJob(join(noteOnly.jobDir, "manifest.json"), { piBin: notePi, timeoutMs: 5_000 }), { status: "ready" });
+  assert.equal(existsSync(join(noteOnly.jobDir, "prompt-extract")), false);
+  const noteConsolidatePrompt = readFileSync(join(noteOnly.jobDir, "prompt-consolidate"), "utf8");
+  assert.match(noteConsolidatePrompt, /2 finding\(s\) marked note are direct statements that a past session recorded with dream_note\. Treat them as high confidence\./);
+  assert.match(noteConsolidatePrompt, /^- f1 \[fact, note\] \(session s-local\) The API listens on port 8080\.$/m);
+  assert.match(noteConsolidatePrompt, new RegExp(`^  > ${localNote.id}: The API listens on port 8080\\.$`, "m"));
+  const noteFindings = readFileSync(join(noteOnly.jobDir, "findings.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(noteFindings.map((finding) => [finding.id, finding.source, finding.sessionId]), [["f1", "note", "s-local"], ["f2", "note", "s-global"]]);
+  assert.deepEqual(noteFindings[0].evidence, [{ entryId: localNote.id, quote: localNote.statement }]);
+  assert.equal(git(concurrentMemory, "diff", "--name-only", "master..dream/note-only"), "notes.md");
+  git(concurrentMemory, "merge", "--ff-only", "dream/note-only");
+  dreamTest.reconcileJobs(noteHome);
+  assert.equal(readState(noteOnly.jobDir).status, "applied");
+  assert.deepEqual(readdirSync(join(noteHome, "inbox")).sort(), ["bad-kind.json", "broken.json", `${otherNote.id}.json`].sort());
+
+  const keepNote = writeNote(noteHome, { kind: "fact", subject: "keep", statement: "Kept after discard.", cwd: tempRoot, sessionId: "s-keep" });
+  const discardNotes = noteJob("discard-notes", [keepNote.id]);
+  const discardNotesCommit = dreamTest.publishJob(discardNotes);
+  writeFileSync(join(discardNotes.jobDir, "state.json"), JSON.stringify({ id: discardNotes.id, status: "ready", publishedCommit: discardNotesCommit }));
+  assert.deepEqual(availableNotes(noteHome, tempRoot).map((note: { id: string }) => note.id), []);
+  await commands.get("dream-discard")!.handler("discard-notes", commandContext);
+  assert.equal(readState(discardNotes.jobDir).status, "discarded");
+  assert.equal(existsSync(join(noteHome, "inbox", `${keepNote.id}.json`)), true);
+  assert.deepEqual(availableNotes(noteHome, tempRoot).map((note: { id: string }) => note.id), [keepNote.id]);
 
   process.env.PI_DREAM_HOME = dreamHome;
   process.env.PI_DREAM_MEMORY_ROOT = memoryRoot;

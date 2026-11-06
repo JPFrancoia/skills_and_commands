@@ -2,6 +2,8 @@
 
 Pi Dream is a Pi extension that extracts durable facts from completed sessions. It stores accepted facts as Markdown files in a Git repository. You review each candidate before Pi Dream changes accepted memory.
 
+A normal session can also record a note with the `dream_note` tool. A note is a short proposal for memory. New sessions see pending notes next to the memory index. The next batch merges notes into memory files. See [Session notes](#session-notes).
+
 ## Memory storage
 
 The extension stores accepted memory in `~/.pi/agent/memory/`. Git provides version history and rollback. A memory file can use a `scope` field to show only in one project folder. See [Project scope](#project-scope).
@@ -20,6 +22,20 @@ A description can have up to 150 characters. `dream_memory_edit` rejects a new o
 
 Pi Dream stores jobs under `~/.pi/agent/dreams/jobs/<job-id>/`. A job contains its manifest, state, transcripts, findings, candidate files, write records, and worker logs. A candidate folder holds proposed memory files. It is not a Git repository or worktree.
 
+Pi Dream stores notes under `~/.pi/agent/dreams/inbox/<note-id>.json`. The `PI_DREAM_HOME` variable moves both folders.
+
+## Session notes
+
+Every normal session has the `dream_note` tool. The system prompt tells Pi to call it when it learns a durable fact, preference, correction, or procedure that will help a future session. Examples are a user correction and the end of a task. Pi records one note for each fact. It does not note temporary details, task progress, or secrets. No user request is necessary.
+
+A note has a `kind`, a `subject` of up to 80 characters, a `statement` of up to 1000 characters, and an optional `memoryPath`. The kinds are the finding kinds: `fact`, `preference`, `correction`, `procedure`, `failure`, and `stale`. The tool adds the session ID, the working directory, and the time. It writes one JSON file to the inbox. It never changes memory files. The tool rejects an invalid kind, a long field, or a `memoryPath` outside the memory store.
+
+A new session gets a section `Pending memory notes (not yet consolidated)` after the memory index. The section shows notes from the same working directory or a parent directory. A note without a working directory shows everywhere. The section shows the newest 50 notes in up to 4000 characters. A note is a proposal from a past session. It is not accepted memory.
+
+The `/dream` command takes pending notes for the current working directory. It takes up to 100 notes. A batch can run with notes and no sessions. The runner then skips the extract phase. The confirmation shows the session count and the note count. A queued, running, or ready job reserves its notes. The `/dream-status` summary shows the available note count.
+
+The runner adds each note to `findings.jsonl` as a finding with `source: "note"`. The note ID is the evidence entry ID. The statement is the quote. The consolidate prompt marks these findings as high confidence. When you apply the job, Pi Dream deletes its notes from the inbox. A discarded job keeps its notes. Delete an inbox file to remove a wrong note.
+
 ## Commands
 
 | Command | Action |
@@ -28,14 +44,14 @@ Pi Dream stores jobs under `~/.pi/agent/dreams/jobs/<job-id>/`. A job contains i
 | `/dream-status [job-id]` | Show project session coverage and all jobs, or show one job. |
 | `/dream-resume [job-id]` | Resume unfinished work in a failed job. |
 | `/dream-review [job-id]` | Publish a job branch and write its review file. |
-| `/dream-apply [job-id]` | Fast-forward `master` from a reviewed branch. |
+| `/dream-apply [job-id]` | Merge `master` into a reviewed branch, then fast-forward `master`. |
 | `/dream-discard [job-id]` | Delete a job branch and candidate files. |
 
 These commands use the latest job when you omit `[job-id]`, except `/dream-status`, which lists all jobs.
 
-Pi Dream runs only when you start `/dream` or `/dream-resume`. It does not start scheduled jobs. Each batch selects unprocessed sessions from the current working directory. It selects the oldest sessions first, up to the requested count.
+Pi Dream runs only when you start `/dream`, `/dream-resume`, or `/dream-apply`. It does not start scheduled jobs. Each batch selects unprocessed sessions and pending notes from the current working directory. It selects the oldest sessions first, up to the requested count.
 
-Run `/dream-status` without a job ID to see project session coverage. An accepted session belongs to a job that is in `master` history. A reserved session belongs to a queued, running, or ready job. An available session can enter a new batch. The summary states `All project sessions are accepted.` when no project session remains. For a running job, `/dream-status` shows the phase: `extract` or `consolidate`.
+Run `/dream-status` without a job ID to see project session coverage. An accepted session belongs to a job that is in `master` history. A reserved session belongs to a queued, running, or ready job. An available session can enter a new batch. The summary states `All project sessions are accepted.` when no project session remains. For a running job, `/dream-status` shows the phase: `extract`, `consolidate`, or `merge`.
 
 In UI sessions, the status area shows the latest job across all working directories. It refreshes once per second. With no job, it shows `🌙 dream: idle`. Queued, running, and ready jobs show completed and total counts, such as `🌙 dream: 10/10`. This compact label remains unchanged. Use `/dream-status` to see each job state. Failed, applied, and discarded jobs show their state instead of counts. A state read error shows `🌙 dream: unavailable`. The status area clears when the session shuts down. Headless sessions do not show this status.
 
@@ -73,7 +89,9 @@ The worker writes each finding to `findings.jsonl` in its attempt folder. Worker
 
 ### Consolidate phase
 
-When the extract phase ends, the runner merges all worker findings into `<job>/findings.jsonl`. It gives each finding an ID: `f1`, `f2`, and so on.
+When the extract phase ends, the runner compares `master` with the recorded base. If `master` moved and no consolidation completed, the runner replaces the candidate with a new snapshot of `master`. It writes the new base to `manifest.json`. Extract workers only read the candidate, so this step loses nothing.
+
+The runner then merges all worker findings and job notes into `<job>/findings.jsonl`. It gives each finding an ID: `f1`, `f2`, and so on.
 
 Each successful attempt and session has a `result.json` file. This completion record contains hashes for the transcript and findings. A hash is a value that identifies file contents. The runner uses hashes to detect changed data before resume. It also checks the finding fields and quotes. If a crash interrupts the copy to the session folder, resume recovers the completed attempt.
 
@@ -89,7 +107,7 @@ Each extraction attempt has a total limit of 30 minutes. The consolidate worker 
 
 The runner sets these environment variables for workers:
 
-- `PI_DREAM_PHASE`: `extract` or `consolidate`.
+- `PI_DREAM_PHASE`: `extract`, `consolidate`, or `merge`.
 - `PI_DREAM_FINDINGS`: the findings file that the worker uses. An extract worker uses its own folder. The consolidate worker uses `<job>/findings.jsonl`.
 - `PI_DREAM_CWD`: the batch working directory. Only the consolidate worker gets this variable.
 
@@ -99,7 +117,7 @@ The runner uses a worker pool. The pool runs up to 10 workers at the same time i
 
 Each batch has its own candidate files. Concurrent batches still share provider load. Their proposals can need a manual merge after one proposal changes `master`. Pi Dream does not retry consolidation automatically. More sessions and workers can use more resources and reach provider rate limits.
 
-The job state has a `phase` field while the job runs. Its value is `extract` or `consolidate`. The field is removed when the job is ready.
+The job state has a `phase` field while the job runs. Its value is `extract`, `consolidate`, or `merge`. The field is removed when the job is ready.
 
 The runner sends each prompt through standard input. Standard input is the data stream that a process reads. This method avoids command-line size limits for long transcripts. Extract worker JSON output goes to `<job>/workers/<index>-<session-id>/attempt-*/worker.log`. Standard error is the error data stream from a process. Extract worker standard error goes to `<job>/workers/<index>-<session-id>/attempt-*/worker.error.log`. The consolidate worker uses `<job>/workers/consolidate/attempt-*/`. The runner reads output as separate JSON events. It keeps complete logs on disk, not in memory. This method prevents `spawnSync pi ENOBUFS`.
 
@@ -146,7 +164,15 @@ Open `~/.pi/agent/memory/` in lazygit to review a branch. Compare `dream/<job-id
 
 The `/dream-review` command reads the current commit on `dream/<job-id>`. It also updates the recorded commit. This applies after extra correction commits or an amended proposal replaces the original commit. If a user rewrites branch history before a manual merge, run `/dream-review` first. A normal merge must keep the recorded commit in `master` history for Pi Dream to detect acceptance.
 
-The `/dream-apply` command requires interactive approval. It requires a clean accepted repository checked out on `master`. It merges the named branch with `--ff-only`. A fast-forward moves `master` to a later commit without combining separate histories. The named branch can contain correction commits or a replaced proposal commit. Pi Dream uses the current branch commit to track accepted sessions. If the branch does not exist, Pi Dream stops. It does not recreate the branch. If `master` has diverged, Pi Dream stops and asks you to merge the branch manually. Pi Dream marks sessions as processed when it detects the recorded commit in `master` history.
+The `/dream-apply` command requires interactive approval. It requires a clean accepted repository checked out on `master`. The named branch can contain correction commits or a replaced proposal commit. Pi Dream uses the current branch commit to track accepted sessions. If the branch does not exist, Pi Dream stops. It does not recreate the branch. Pi Dream marks sessions as processed when it detects the recorded commit in `master` history.
+
+Apply has three cases:
+
+1. `master` did not move. Apply merges the branch with `--ff-only`. A fast-forward moves `master` to a later commit without combining separate histories.
+2. `master` moved, and the files do not conflict. Apply runs `git merge-tree` without a checkout. It writes one merge commit with two parents, `master` and the branch tip. It moves the branch to that commit and fast-forwards `master`.
+3. `master` moved, and a file conflicts. Apply starts the runner in the `merge` phase and stops. The runner snapshots the conflicted tree with `diff3` markers into `workers/merge/attempt-*/candidate`. One worker with the consolidate tools removes the markers. The prompt lists the conflicted files and the batch findings. The runner rejects a file with a line that starts with `<<<<<<< `, `||||||| `, or `>>>>>>> `. A `=======` line is a valid Markdown heading underline, so the runner does not test it. The runner commits the resolved tree with two parents and sets the job to `ready`. Review the result with `/dream-review`, then run `/dream-apply` again.
+
+The merge worker uses the job model and the consolidate timeout. The merge step makes up to three attempts when `master` keeps moving. The review diff compares the branch with its merge base, so a merged `master` adds no noise. The batch commits list shows commits that are not in `master`, including `Merge master into dream/<job-id>`.
 
 Apply accepts the complete batch. It does not apply selected files or edits. It records acceptance before it deletes the `dream/<job-id>` branch name. It deletes that name only if the branch still points to the accepted commit. A cleanup error produces a warning and preserves the branch. Accepted memory and processed sessions remain valid.
 
@@ -203,7 +229,7 @@ After a worker exhausts its retries or reports a permanent error, no new session
 
 Detailed worker logs remain under the job's `workers/` directory. If a process crashes while it holds a lock, the lock remains. Lock attempts stop with a bounded timeout error. Before you remove a lock manually, make sure that no active process uses it.
 
-If apply cannot fast-forward, review and merge the branch manually in the accepted repository. If Git reports conflicts, resolve them before you complete the merge. If the memory Git repository is unavailable or damaged, Pi Dream commands stop rather than change accepted memory. Use the repository's Git history to recover accepted memory. Do not edit the candidate as a replacement for recovery.
+If the merge worker fails, the job is failed and the branch keeps its last commit. Run `/dream-resume` to run the merge again. You can also merge the branch manually in the accepted repository. If the memory Git repository is unavailable or damaged, Pi Dream commands stop rather than change accepted memory. Use the repository's Git history to recover accepted memory. Do not edit the candidate as a replacement for recovery.
 
 ## Installation
 
@@ -237,4 +263,4 @@ export JITI_ALIAS="{\"@earendil-works/pi-coding-agent\":\"$host/dist/index.js\",
 NODE_PATH="$host/node_modules" node "$host/node_modules/jiti/lib/jiti-cli.mjs" extensions/pi-dream/pi-dream.test.ts
 ```
 
-The test covers transcript filtering, tool call and tool result cuts, redaction, memory indexing, scope matching, the description limit, path safety, hashes, findings, finding-based edits, Git conflicts, and command registration. It also covers the worker pool, the extract and consolidate phases, the consolidate prompt with session counts, failure notifications, worker error logs, 2 MiB output, concurrent jobs, parallel workers, manual merges, batch publication, session reservations, and legacy job review. Run `git diff --check` to check the documentation diff.
+The test covers transcript filtering, tool call and tool result cuts, redaction, memory indexing, scope matching, the description limit, path safety, hashes, findings, finding-based edits, Git conflicts, and command registration. It also covers the worker pool, the extract and consolidate phases, the consolidate prompt with session counts, failure notifications, worker error logs, 2 MiB output, concurrent jobs, parallel workers, batch publication, session reservations, and legacy job review. It covers the `dream_note` tool, the note section in the prompt, note-only batches, note reservations, inbox cleanup, the candidate refresh after `master` moves, clean merges on apply, the merge worker, and the conflict marker check. Run `git diff --check` to check the documentation diff.
