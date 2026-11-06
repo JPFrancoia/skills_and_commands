@@ -14,11 +14,14 @@ import {
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { withLock, validateMarkdown, frontMatter, DESCRIPTION_LIMIT, scopeMatches } from "./store.mjs";
-export { validateMarkdown } from "./store.mjs";
+import {
+  withLock, validateMarkdown, frontMatter, DESCRIPTION_LIMIT, scopeMatches,
+  NOTE_KINDS, SUBJECT_LIMIT, STATEMENT_LIMIT,
+} from "./store.mjs";
+export { validateMarkdown, SUBJECT_LIMIT, STATEMENT_LIMIT } from "./store.mjs";
 
 export type Evidence = { entryId: string; quote: string };
-export const FINDING_KINDS = ["fact", "preference", "correction", "procedure", "failure", "stale"] as const;
+export const FINDING_KINDS = NOTE_KINDS as readonly ["fact", "preference", "correction", "procedure", "failure", "stale"];
 export type FindingInput = {
   kind: (typeof FINDING_KINDS)[number];
   subject: string;
@@ -26,7 +29,8 @@ export type FindingInput = {
   memoryPath?: string;
   evidence: Evidence[];
 };
-export type Finding = FindingInput & { id?: string; sessionId: string };
+// source "note" marks a dream_note from a normal session. Its evidence is the note itself.
+export type Finding = FindingInput & { id?: string; sessionId: string; source?: "note" };
 export type FindingContext = {
   memoryRoot: string;
   sessionId: string;
@@ -52,8 +56,6 @@ export type EditContext = {
   now?: () => string;
 };
 
-const SUBJECT_LIMIT = 80;
-const STATEMENT_LIMIT = 1_000;
 const QUOTE_LIMIT = 500;
 const EVIDENCE_LIMIT = 3;
 

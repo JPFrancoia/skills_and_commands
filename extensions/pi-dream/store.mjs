@@ -106,8 +106,8 @@ function hash(content) {
 }
 
 /** @returns {{version: 1, baseCommit: string, files: Record<string, string>}} */
-export function createSnapshot(root, candidateRoot) {
-  const baseCommit = git(root, ["rev-parse", "refs/heads/master"]);
+export function createSnapshot(root, candidateRoot, treeish = "refs/heads/master") {
+  const baseCommit = git(root, ["rev-parse", treeish]);
   mkdirSync(candidateRoot, { recursive: true });
   if (readdirSync(candidateRoot).length) throw new Error("The candidate folder is not empty.");
   const files = {};
@@ -136,6 +136,40 @@ export function reviewRef(id) {
   return `refs/heads/dream/${id}`;
 }
 
+// Commits the candidate files on top of the base tree. The base may be a commit or a tree.
+export function commitCandidate(root, jobDir, candidateRoot, base, parents, message) {
+  const index = resolve(jobDir, `publish-${randomUUID()}.index`);
+  const env = { ...process.env, GIT_INDEX_FILE: index };
+  try {
+    git(root, ["read-tree", base.baseCommit], { env });
+    const paths = memoryFiles(candidateRoot);
+    const removed = Object.keys(base.files).filter((path) => !paths.includes(path));
+    for (const path of removed) git(root, ["update-index", "--force-remove", "--", path], { env });
+    for (const path of paths) {
+      const content = readFileSync(join(candidateRoot, path));
+      validateMarkdown(content.toString("utf8"));
+      if (hash(content) === base.files[path]) continue;
+      const object = git(root, ["hash-object", "-w", "--stdin"], {
+        input: content, stdio: ["pipe", "pipe", "pipe"],
+      });
+      const original = git(root, ["ls-tree", base.baseCommit, "--", path]);
+      const mode = original.startsWith("100755 ") ? "100755" : "100644";
+      if (original && !/^100(?:644|755) /.test(original)) {
+        throw new Error(`The candidate cannot replace a non-file Git entry: ${path}`);
+      }
+      git(root, ["update-index", "--add", "--cacheinfo", mode, object, path], { env });
+    }
+    const tree = git(root, ["write-tree"], { env });
+    return git(root, [
+      "-c", "user.name=Pi Dream", "-c", "user.email=pi-dream@local",
+      "commit-tree", tree, ...parents.flatMap((parent) => ["-p", parent]), "-m", message,
+    ]);
+  } finally {
+    rmSync(index, { force: true });
+    rmSync(`${index}.lock`, { force: true });
+  }
+}
+
 export function publishJob(manifest) {
   const { memoryRoot: root, jobDir, candidateRoot, base } = manifest;
   assertMaster(root);
@@ -152,41 +186,52 @@ export function publishJob(manifest) {
     git(root, ["fetch", "--quiet", "--no-write-fetch-head", candidateRoot, `HEAD:${ref}`]);
     commit = git(root, ["rev-parse", ref]);
   } else {
-    const index = resolve(jobDir, `publish-${randomUUID()}.index`);
-    const env = { ...process.env, GIT_INDEX_FILE: index };
-    try {
-      git(root, ["read-tree", base.baseCommit], { env });
-      const paths = memoryFiles(candidateRoot);
-      const removed = Object.keys(base.files).filter((path) => !paths.includes(path));
-      for (const path of removed) git(root, ["update-index", "--force-remove", "--", path], { env });
-      for (const path of paths) {
-        const content = readFileSync(join(candidateRoot, path));
-        validateMarkdown(content.toString("utf8"));
-        if (hash(content) === base.files[path]) continue;
-        const object = git(root, ["hash-object", "-w", "--stdin"], {
-          input: content, stdio: ["pipe", "pipe", "pipe"],
-        });
-        const original = git(root, ["ls-tree", base.baseCommit, "--", path]);
-        const mode = original.startsWith("100755 ") ? "100755" : "100644";
-        if (original && !/^100(?:644|755) /.test(original)) {
-          throw new Error(`The candidate cannot replace a non-file Git entry: ${path}`);
-        }
-        git(root, ["update-index", "--add", "--cacheinfo", mode, object, path], { env });
-      }
-      const tree = git(root, ["write-tree"], { env });
-      commit = git(root, [
-        "-c", "user.name=Pi Dream", "-c", "user.email=pi-dream@local",
-        "commit-tree", tree, "-p", base.baseCommit, "-m", `Dream batch ${manifest.id}`,
-      ]);
-      const zero = "0".repeat(commit.length);
-      git(root, ["update-ref", ref, commit, zero]);
-    } finally {
-      rmSync(index, { force: true });
-      rmSync(`${index}.lock`, { force: true });
-    }
+    commit = commitCandidate(root, jobDir, candidateRoot, base, [base.baseCommit], `Dream batch ${manifest.id}`);
+    git(root, ["update-ref", ref, commit, "0".repeat(commit.length)]);
   }
   writeJson(statePath, { ...state, publishedCommit: commit, branch: ref.slice("refs/heads/".length) });
   return commit;
+}
+
+export function isAncestor(root, ancestor, descendant) {
+  try {
+    git(root, ["merge-base", "--is-ancestor", ancestor, descendant]);
+    return true;
+  } catch { return false; }
+}
+
+/**
+ * Merges master into the review branch without a checkout.
+ * @returns {{status: "fast-forward"} | {status: "merged", commit: string} |
+ *   {status: "conflict", tree: string, conflicts: string[], master: string, tip: string}}
+ */
+export function mergeMaster(root, id) {
+  const ref = reviewRef(id);
+  const master = git(root, ["rev-parse", "refs/heads/master"]);
+  const tip = git(root, ["rev-parse", ref]);
+  if (isAncestor(root, master, tip)) return { status: "fast-forward" };
+  let output;
+  let conflicted = false;
+  try {
+    output = git(root, ["-c", "merge.conflictStyle=diff3", "merge-tree", "--write-tree", "--name-only", master, tip]);
+  } catch (error) {
+    if (error.status !== 1 || typeof error.stdout !== "string") throw error;
+    output = error.stdout;
+    conflicted = true;
+  }
+  const lines = output.split("\n");
+  const tree = lines[0].trim();
+  if (!conflicted) {
+    const commit = git(root, [
+      "-c", "user.name=Pi Dream", "-c", "user.email=pi-dream@local",
+      "commit-tree", tree, "-p", master, "-p", tip, "-m", `Merge master into dream/${id}`,
+    ]);
+    git(root, ["update-ref", ref, commit, tip]);
+    return { status: "merged", commit };
+  }
+  const blank = lines.indexOf("", 1);
+  const conflicts = lines.slice(1, blank === -1 ? undefined : blank).map((line) => line.trim()).filter(Boolean);
+  return { status: "conflict", tree, conflicts, master, tip };
 }
 
 export function jobDirectories(home) {
@@ -225,8 +270,50 @@ export function reconcileJobs(home) {
     })();
     if (!result) continue;
     markSessionsProcessed(join(home, "state.json"), manifest.sessionIds);
+    for (const id of manifest.noteIds ?? []) rmSync(join(home, "inbox", `${id}.json`), { force: true });
     writeJson(statePath, { ...state, status: "applied", updatedAt: new Date().toISOString() });
   }
+}
+
+export const NOTE_KINDS = ["fact", "preference", "correction", "procedure", "failure", "stale"];
+export const SUBJECT_LIMIT = 80;
+export const STATEMENT_LIMIT = 1_000;
+
+function validNote(note) {
+  return note && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(note.id ?? "") && NOTE_KINDS.includes(note.kind) &&
+    typeof note.subject === "string" && note.subject.trim() && note.subject.length <= SUBJECT_LIMIT &&
+    typeof note.statement === "string" && note.statement.trim() && note.statement.length <= STATEMENT_LIMIT &&
+    (note.memoryPath === undefined || (typeof note.memoryPath === "string" && memoryPath(note.memoryPath))) &&
+    (note.cwd === undefined || typeof note.cwd === "string") && typeof note.sessionId === "string";
+}
+
+export function writeNote(home, input) {
+  const id = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
+  const note = { id, kind: input.kind, subject: input.subject.trim(), statement: input.statement.trim(),
+    ...(input.memoryPath ? { memoryPath: input.memoryPath.replace(/^@/, "") } : {}),
+    ...(input.cwd ? { cwd: input.cwd } : {}), sessionId: input.sessionId, createdAt: new Date().toISOString() };
+  if (!validNote(note)) throw new Error("The note is invalid. Check kind, subject, statement, and memoryPath.");
+  writeJson(join(home, "inbox", `${id}.json`), note);
+  return note;
+}
+
+// Notes come from dream_note in normal sessions. A note without cwd applies everywhere. Newest first.
+export function loadNotes(home, cwd) {
+  const dir = join(home, "inbox");
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((name) => name.endsWith(".json")).sort().reverse().map((name) => {
+    try { return readJson(join(dir, name)); } catch { return undefined; }
+  }).filter((note) => validNote(note) && (cwd === undefined || scopeMatches(note.cwd, cwd)));
+}
+
+export function availableNotes(home, cwd) {
+  const reserved = new Set();
+  for (const dir of jobDirectories(home)) {
+    const state = readJson(join(dir, "state.json"));
+    if (!["queued", "running", "ready"].includes(state.status)) continue;
+    for (const id of readJson(join(dir, "manifest.json")).noteIds ?? []) reserved.add(id);
+  }
+  return loadNotes(home, cwd).filter((note) => !reserved.has(note.id));
 }
 
 export function availableSessions(home, sessions) {
