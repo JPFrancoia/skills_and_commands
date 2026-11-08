@@ -233,19 +233,41 @@ If the merge worker fails, the job is failed and the branch keeps its last commi
 
 ## Installation
 
-From the repository root, install the extension package:
+From the repository root, install the formatter dependency first:
+
+```bash
+npm ci --prefix extensions/pi-dream
+```
+
+Then install the extension package:
 
 ```bash
 pi install "$PWD/extensions/pi-dream"
 ```
 
-Reload open Pi sessions:
+After installation or a formatter dependency update, reload open Pi sessions:
 
 ```text
 /reload
 ```
 
 Pi Dream initializes the memory directory as a Git repository when the first batch starts. It creates a README and an initial commit when the repository has no commit. The accepted repository uses the `master` branch. At initialization, Pi Dream renames `main` to `master` when `master` does not exist. If both branches exist, initialization stops with an error. Installation alone does not change live Pi settings or create accepted memory.
+
+### Format existing memory
+
+The extension uses Prettier 3.8.1 to format each `dream_memory_edit` write before it saves the file. It calculates the file hash and audit record from the formatted content. The formatter uses the Markdown parser, a print width of 79, prose wrapping, and LF line endings. It does not read project or editor settings. Prettier rules allow some lines to exceed the print width.
+
+The formatter preserves parsed `description` and `scope` metadata. It does not format code inside fenced blocks or YAML front matter. It does not check the full YAML syntax. Delete and move actions remain unchanged.
+
+To format existing memory files, run this command from the repository root. Give it the memory directory as its argument:
+
+```bash
+node extensions/pi-dream/format-memory.mjs /path/to/memory
+```
+
+The command formats visible Markdown files in all subdirectories. It skips hidden paths and non-Markdown files. It rejects symbolic links inside the memory directory. It formats and checks all files before it writes any file. The command uses the same file lock as `dream_memory_edit`. Atomic writes replace each file with one rename operation. The command reports the changed and total file counts. It does not commit changes.
+
+Review and commit changes to accepted memory before you use Dream apply. Uncommitted changes in accepted memory block Dream apply.
 
 ## Validation
 
@@ -263,4 +285,4 @@ export JITI_ALIAS="{\"@earendil-works/pi-coding-agent\":\"$host/dist/index.js\",
 NODE_PATH="$host/node_modules" node "$host/node_modules/jiti/lib/jiti-cli.mjs" extensions/pi-dream/pi-dream.test.ts
 ```
 
-The test covers transcript filtering, tool call and tool result cuts, redaction, memory indexing, scope matching, the description limit, path safety, hashes, findings, finding-based edits, Git conflicts, and command registration. It also covers the worker pool, the extract and consolidate phases, the consolidate prompt with session counts, failure notifications, worker error logs, 2 MiB output, concurrent jobs, parallel workers, batch publication, session reservations, and legacy job review. It covers the `dream_note` tool, the note section in the prompt, note-only batches, note reservations, inbox cleanup, the candidate refresh after `master` moves, clean merges on apply, the merge worker, and the conflict marker check. Run `git diff --check` to check the documentation diff.
+The test covers transcript filtering, tool call and tool result cuts, redaction, memory indexing, scope matching, the description limit, path safety, hashes, findings, finding-based edits, Git conflicts, and command registration. It also covers the worker pool, the extract and consolidate phases, the consolidate prompt with session counts, failure notifications, worker error logs, 2 MiB output, concurrent jobs, parallel workers, batch publication, session reservations, and legacy job review. It covers the `dream_note` tool, the note section in the prompt, note-only batches, note reservations, inbox cleanup, the candidate refresh after `master` moves, clean merges on apply, the merge worker, and the conflict marker check. Formatter coverage includes write formatting, metadata preservation, repeatable formatting, safe directory formatting, and missing-dependency behavior. Run `git diff --check` to check the documentation diff.

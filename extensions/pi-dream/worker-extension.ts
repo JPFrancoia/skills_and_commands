@@ -7,9 +7,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
-  rmSync,
   unlinkSync,
-  writeFileSync,
 } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -18,6 +16,7 @@ import {
   withLock, validateMarkdown, frontMatter, DESCRIPTION_LIMIT, scopeMatches,
   NOTE_KINDS, SUBJECT_LIMIT, STATEMENT_LIMIT,
 } from "./store.mjs";
+import { atomicWrite, formatMarkdown } from "./format-memory.mjs";
 export { validateMarkdown, SUBJECT_LIMIT, STATEMENT_LIMIT } from "./store.mjs";
 
 export type Evidence = { entryId: string; quote: string };
@@ -230,17 +229,6 @@ function validateWrittenMarkdown(content: string, cwd?: string): void {
   }
 }
 
-function atomicWrite(path: string, content: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tempPath = `${path}.pi-dream-${process.pid}-${Date.now()}.tmp`;
-  try {
-    writeFileSync(tempPath, content, { encoding: "utf8", flag: "wx" });
-    renameSync(tempPath, path);
-  } finally {
-    rmSync(tempPath, { force: true });
-  }
-}
-
 export async function applyMemoryEdit(
   context: EditContext,
   input: EditInput,
@@ -265,7 +253,9 @@ export async function applyMemoryEdit(
     if (input.action === "write") {
       if (input.content === undefined) throw new Error("Write operations need content.");
       validateWrittenMarkdown(input.content, context.cwd);
-      atomicWrite(sourcePath, input.content);
+      const formatted = await formatMarkdown(input.content);
+      validateWrittenMarkdown(formatted, context.cwd);
+      atomicWrite(sourcePath, formatted);
       newHash = sha256File(sourcePath);
     } else if (input.action === "delete") {
       if (oldHash === MISSING) throw new Error(`The memory file does not exist: ${input.path}`);

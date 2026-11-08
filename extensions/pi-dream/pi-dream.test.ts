@@ -13,7 +13,8 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, join, relative, resolve } from "node:path";
+import { delimiter, dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type {
   ExtensionAPI,
@@ -52,7 +53,8 @@ const { default: workerExtension, __test__: workerTest } = await import(
   "./worker-extension.ts"
 );
 const { runJob, __test__: runnerTest } = await import("./runner.mjs");
-const { withLock, writeNote, availableNotes } = await import("./store.mjs");
+const { withLock, writeNote, availableNotes, frontMatter } = await import("./store.mjs");
+const { formatMarkdown } = await import("./format-memory.mjs");
 
 const successfulWorkerEnd = `printf '\\n%s\\n' '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}'`;
 
@@ -82,6 +84,87 @@ function messageEntry(
 }
 
 try {
+  const prose = "Keep memory readable and preserve the original facts when wrapping long paragraphs. ".repeat(4).trim();
+  const formatInput = [
+    "---", "description: Formatting checks.", "scope: ~/projects", "---", "",
+    "# Memory", "", prose, "", `- ${prose}`, "  - Nested item with `dream_memory_edit`.", "",
+  ].join("\n");
+  const formatted = await formatMarkdown(formatInput);
+  assert.notEqual(formatted, formatInput);
+  assert.ok(formatted.split("\n").every((line) => line.length <= 79));
+  assert.deepEqual(frontMatter(formatted), frontMatter(formatInput));
+  assert.match(formatted, /\n  - Nested item with `dream_memory_edit`\./);
+  assert.equal(await formatMarkdown(formatted), formatted);
+  assert.equal(await formatMarkdown(formatInput.replaceAll("\n", "\r\n")), formatted);
+  await assert.rejects(formatMarkdown("# Missing metadata\n"), /front matter/);
+
+  const longPath = `docs/${"long-path/".repeat(12)}decision.md`;
+  const longUrl = `https://example.com/${"long-url/".repeat(12)}page`;
+  const codeLine = `const value={text:"${"unchanged ".repeat(12)}"};`;
+  const markdownExamples = [
+    "---", `description: ${"Long metadata stays on one line. ".repeat(3).trim()}`, "---", "",
+    `Run \`${longPath}\` exactly.`, "", `[Reference](${longUrl})`, "",
+    "First line.  ", "Second line.", "",
+    "> Keep this quote as a block quote.", "",
+    "```javascript", codeLine, "```", "",
+    "| Name | Value |", "| --- | --- |", `| Path | \`${longPath}\` |`, "",
+  ].join("\n");
+  const formattedExamples = await formatMarkdown(markdownExamples);
+  assert.equal(await formatMarkdown(formattedExamples), formattedExamples);
+  assert.deepEqual(frontMatter(formattedExamples), frontMatter(markdownExamples));
+  assert.ok(formattedExamples.includes(`\`${longPath}\``));
+  assert.ok(formattedExamples.includes(`[Reference](${longUrl})`));
+  assert.ok(formattedExamples.includes(`\n${codeLine}\n`));
+  assert.match(formattedExamples, /First line\. {2}\nSecond line\./);
+  assert.match(formattedExamples, /^> Keep this quote as a block quote\.$/m);
+  assert.ok(formattedExamples.split("\n").some((line) => line.length > 79));
+
+  const formatRoot = join(tempRoot, "format memory");
+  mkdirSync(join(formatRoot, "nested"), { recursive: true });
+  mkdirSync(join(formatRoot, ".hidden"));
+  const formatPath = join(formatRoot, "nested", "memory.md");
+  writeFileSync(formatPath, formatInput);
+  writeFileSync(join(formatRoot, "keep.txt"), "Keep this non-Markdown file.\n");
+  writeFileSync(join(formatRoot, ".hidden", "invalid.md"), "# Ignore this file.\n");
+  writeFileSync(join(formatRoot, ".prettierrc"), '{"printWidth":20,"proseWrap":"never"}\n');
+  writeFileSync(join(formatRoot, ".editorconfig"), "root = true\n[*]\nmax_line_length = 20\n");
+  const formatCommand = fileURLToPath(new URL("./format-memory.mjs", import.meta.url));
+  const runFormatter = (...args: string[]) => execFileSync(process.execPath, [formatCommand, ...args], {
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+  });
+  assert.throws(() => runFormatter(), /Usage:/);
+  assert.throws(() => runFormatter(formatRoot, "extra"), /Usage:/);
+  assert.throws(() => runFormatter(join(tempRoot, "does-not-exist")), /ENOENT/);
+  assert.match(runFormatter(formatRoot), /Formatted 1 of 1 Markdown file\(s\)/);
+  assert.equal(readFileSync(formatPath, "utf8"), formatted);
+  assert.match(runFormatter(formatRoot), /Formatted 0 of 1 Markdown file\(s\)/);
+  assert.equal(readFileSync(join(formatRoot, "keep.txt"), "utf8"), "Keep this non-Markdown file.\n");
+  assert.equal(readFileSync(join(formatRoot, ".hidden", "invalid.md"), "utf8"), "# Ignore this file.\n");
+  assert.equal(existsSync(join(formatRoot, ".edit-lock")), false);
+
+  writeFileSync(formatPath, formatInput);
+  const invalidFormatPath = join(formatRoot, "z-invalid.md");
+  writeFileSync(invalidFormatPath, "# Missing metadata\n");
+  assert.throws(() => runFormatter(formatRoot), /z-invalid\.md/);
+  assert.equal(readFileSync(formatPath, "utf8"), formatInput, "validate every file before the first write");
+  assert.equal(existsSync(join(formatRoot, ".edit-lock")), false);
+  rmSync(invalidFormatPath);
+  symlinkSync(formatPath, join(formatRoot, "linked.md"));
+  assert.throws(() => runFormatter(formatRoot), /symlink/);
+  assert.equal(readFileSync(formatPath, "utf8"), formatInput);
+  rmSync(join(formatRoot, "linked.md"));
+
+  const unavailableFormatter = join(tempRoot, "formatter-without-dependency");
+  mkdirSync(unavailableFormatter);
+  for (const name of ["format-memory.mjs", "store.mjs"]) {
+    writeFileSync(join(unavailableFormatter, name), readFileSync(new URL(`./${name}`, import.meta.url)));
+  }
+  assert.throws(() => execFileSync(process.execPath, [join(unavailableFormatter, "format-memory.mjs"), formatRoot], {
+    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+  }), /Run npm ci in the pi-dream package directory/);
+  assert.equal(readFileSync(formatPath, "utf8"), formatInput);
+  assert.equal(existsSync(join(formatRoot, ".edit-lock")), false);
+
   assert.equal(dreamTest.parseBatchCount("", 10, 100), 10);
   assert.equal(dreamTest.parseBatchCount("3", 10, 100), 3);
   assert.equal(dreamTest.parseBatchCount("100", 10, 100), 100);
@@ -269,6 +352,43 @@ try {
   assert.deepEqual(createdRecord.findingIds, ["f1"]);
   assert.deepEqual(createdRecord.sessionIds, ["session-1"]);
   assert.deepEqual(createdRecord.evidence, [{ sessionId: "session-1", entryId: "user-1", quote: "Use short replies." }]);
+
+  const formattedEdit = await workerTest.applyMemoryEdit(editContext, {
+    action: "write", path: "global/formatted.md", expectedHash: "missing", content: formatInput,
+    reason: "Keep memory readable.", findingIds: ["f1"],
+  });
+  assert.equal(readFileSync(join(memoryRoot, "global/formatted.md"), "utf8"), formatted);
+  assert.equal(formattedEdit.newHash, workerTest.sha256Text(formatted));
+  assert.notEqual(formattedEdit.newHash, workerTest.sha256Text(formatInput));
+  const formattedRecord = JSON.parse(readFileSync(join(jobDir, "writes.jsonl"), "utf8").trim().split("\n").at(-1)!);
+  assert.equal(formattedRecord.newHash, formattedEdit.newHash);
+  assert.deepEqual(formattedRecord.findingIds, ["f1"]);
+  const writesBeforeFormatFailure = readFileSync(join(jobDir, "writes.jsonl"), "utf8");
+  await assert.rejects(workerTest.applyMemoryEdit(editContext, {
+    action: "write", path: "global/formatted.md", expectedHash: workerTest.sha256Text(formatInput),
+    content: formatInput, reason: "Check the saved hash.", findingIds: [],
+  }), /hash changed/);
+  await assert.rejects(workerTest.applyMemoryEdit(editContext, {
+    action: "write", path: "global/formatted.md", expectedHash: formattedEdit.newHash,
+    content: "# Missing metadata\n", reason: "Check invalid formatting input.", findingIds: [],
+  }), /front matter/);
+  assert.equal(readFileSync(join(memoryRoot, "global/formatted.md"), "utf8"), formatted);
+  assert.equal(readFileSync(join(jobDir, "writes.jsonl"), "utf8"), writesBeforeFormatFailure);
+
+  writeFileSync(join(unavailableFormatter, "worker-extension.ts"), readFileSync(new URL("./worker-extension.ts", import.meta.url)));
+  const missingFormatterTest = join(unavailableFormatter, "missing-formatter.test.ts");
+  writeFileSync(missingFormatterTest, [
+    'import assert from "node:assert/strict";',
+    'const { applyMemoryEdit } = await import("./worker-extension.ts");',
+    `const context = ${JSON.stringify({ memoryRoot: formatRoot, jobDir: unavailableFormatter, jobId: "missing-formatter", findings: [] })};`,
+    `const input = ${JSON.stringify({ action: "write", path: "nested/memory.md", expectedHash: workerTest.sha256Text(formatInput), content: formatInput, reason: "Check a missing dependency.", findingIds: [] })};`,
+    'await assert.rejects(applyMemoryEdit(context, input), /Run npm ci in the pi-dream package directory/);',
+  ].join("\n"));
+  const jitiCli = join(dirname(require.resolve("jiti/package.json")), "lib/jiti-cli.mjs");
+  execFileSync(process.execPath, [jitiCli, missingFormatterTest], { stdio: ["ignore", "pipe", "pipe"] });
+  assert.equal(readFileSync(formatPath, "utf8"), formatInput);
+  assert.equal(existsSync(join(unavailableFormatter, "writes.jsonl")), false);
+  assert.equal(existsSync(join(formatRoot, ".edit-lock")), false);
 
   await assert.rejects(
     workerTest.applyMemoryEdit(editContext, {
