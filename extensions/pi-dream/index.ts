@@ -5,13 +5,14 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
   type ExtensionAPI,
   type ExtensionContext,
@@ -20,13 +21,16 @@ import {
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { FINDING_KINDS, listMarkdown, SUBJECT_LIMIT, STATEMENT_LIMIT } from "./worker-extension.ts";
+import { FINDING_KINDS, listMarkdown, SUBJECT_LIMIT, STATEMENT_LIMIT, resolveMemoryPath } from "./worker-extension.ts";
 import {
   git, createSnapshot, publishJob, withLock,
   writeJson as atomicJson, assertMaster, reviewRef, jobDirectories,
   loadProcessedSessions, markSessionsProcessed, reconcileJobs, availableSessions, DESCRIPTION_LIMIT, scopeMatches,
-  mergeMaster, loadNotes, availableNotes, writeNote,
+  mergeMaster, loadNotes, availableNotes, writeNote, isAncestor, memoryTreeEntries,
 } from "./store.mjs";
+
+import { buildSource, contentText, redactTranscript, sourcesHash, loadSources, parseTranscript } from "./sources.mjs";
+export { redactTranscript } from "./sources.mjs";
 
 const DEFAULT_BATCH = 10;
 const MAX_BATCH = 100;
@@ -46,6 +50,7 @@ export type Note = {
   sessionId: string;
   cwd?: string;
   createdAt: string;
+  entryId?: string;
 };
 
 type FileHashes = Record<string, string>;
@@ -70,6 +75,8 @@ type JobManifest = {
   extensions?: string[];
   sessionIds: string[];
   noteIds?: string[];
+  sourcesHash?: string;
+  reviewPaths?: string[];
   transcripts: Array<{ sessionId: string; path: string; createdAt: string }>;
   base: CandidateManifest;
 };
@@ -130,16 +137,6 @@ export function parseBatchCount(raw: string, fallback: number, maximum: number):
   return Math.min(Math.max(Number(raw.trim()), 1), maximum);
 }
 
-export function redactTranscript(text: string): string {
-  return text
-    .replace(/(Authorization:\s*Bearer\s+)[^\s]+/gi, "$1[REDACTED]")
-    .replace(/\b(?:sk|pk|rk)-[A-Za-z0-9._-]{6,}\b/g, "[REDACTED]")
-    .replace(
-      /((?:api[_-]?key|token|secret|password)\s*[:=]\s*)[^\s"']+/gi,
-      "$1[REDACTED]",
-    );
-}
-
 const TOOL_ARGUMENT_LIMIT = 500;
 const TOOL_RESULT_EDGE = 500;
 const TOOL_ERROR_EDGE = 4_000;
@@ -147,22 +144,6 @@ const TOOL_ERROR_EDGE = 4_000;
 export function clipMiddle(text: string, edge: number): string {
   if (text.length <= edge * 2) return text;
   return `${text.slice(0, edge)}\n[... ${text.length - edge * 2} characters cut ...]\n${text.slice(-edge)}`;
-}
-
-// Tool calls are evidence of what the agent did. Thinking parts stay private.
-function contentText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.flatMap((item) => {
-    const part = item as { type?: string; text?: unknown; name?: unknown; arguments?: unknown };
-    if (part?.type === "text" && typeof part.text === "string") return [part.text];
-    if (part?.type === "toolCall" && typeof part.name === "string") {
-      const args = JSON.stringify(part.arguments ?? {});
-      const clipped = args.length > TOOL_ARGUMENT_LIMIT ? `${args.slice(0, TOOL_ARGUMENT_LIMIT)} [... cut]` : args;
-      return [`[tool call ${part.name}] ${clipped}`];
-    }
-    return [];
-  }).join("\n");
 }
 
 export function buildTranscript(input: TranscriptInput): string {
@@ -177,7 +158,7 @@ export function buildTranscript(input: TranscriptInput): string {
     if (entry.type !== "message") continue;
     const message = entry.message as { role?: string; content?: unknown; toolName?: unknown; isError?: unknown };
     if (!message || !["user", "assistant", "toolResult"].includes(message.role ?? "")) continue;
-    let text = contentText(message.content).trim();
+    let text = redactTranscript(contentText(message.content, TOOL_ARGUMENT_LIMIT)).trim();
     if (!text) continue;
     let header = `## entry ${entry.id} | ${message.role}`;
     if (message.role === "toolResult") {
@@ -185,7 +166,7 @@ export function buildTranscript(input: TranscriptInput): string {
       if (typeof message.toolName === "string") header += ` | ${message.toolName}`;
       if (message.isError === true) header += " | error";
     }
-    lines.push("", header, redactTranscript(text));
+    lines.push("", header, text);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -349,6 +330,139 @@ function projectCoverage(home: string, cwd: string, sessions: Array<{ id: string
     : summary;
 }
 
+type SourceSnapshot = ReturnType<typeof buildSource>;
+
+async function collectNoteSources(notes: Note[], sessions: SourceSnapshot[], cwd: string) {
+  const byId = new Map(sessions.map((source) => [source.sessionId, source]));
+  const listings = new Map<string, Awaited<ReturnType<typeof SessionManager.list>>>();
+  const warnings: string[] = [];
+  for (const note of notes) {
+    if (byId.has(note.sessionId)) continue;
+    const folder = note.cwd ?? cwd;
+    try {
+      if (!listings.has(folder)) listings.set(folder, await SessionManager.list(folder));
+      const session = listings.get(folder)!.find((item) => item.id === note.sessionId);
+      if (!session) throw new Error("Source session is unavailable.");
+      byId.set(session.id, buildSource({ sessionId: session.id, cwd: session.cwd,
+        created: session.created.toISOString(), entries: SessionManager.open(session.path).getBranch() }));
+    } catch {
+      warnings.push(`Note ${note.id}: source session ${note.sessionId} is unavailable.`);
+    }
+  }
+  return { version: 1, sessions: [...byId.values()], warnings };
+}
+
+function collectReviewSources(home: string, root: string, paths: string[]) {
+  const sources = new Map<string, SourceSnapshot>();
+  const warnings: string[] = [];
+  const tracked = new Map(paths.map((path) => [path, path]));
+  const covered = new Set<string>();
+  for (const dir of jobDirectories(home).sort().reverse()) {
+    const manifest = readJob<JobManifest>(dir, "manifest.json");
+    const state = readJob<JobState>(dir, "state.json");
+    if (resolve(manifest.memoryRoot) !== resolve(root) || !state.publishedCommit ||
+        !isAncestor(root, state.publishedCommit, "refs/heads/master")) continue;
+    const writesPath = join(dir, "writes.jsonl");
+    if (!existsSync(writesPath)) continue;
+    const writes = readFileSync(writesPath, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    const selected = writes.filter((write) => tracked.has(write.path) || tracked.has(write.sourcePath));
+    const ids = new Set<string>();
+    for (const write of selected) {
+      for (const id of write.sessionIds ?? (write.sessionId ? [write.sessionId] : [])) ids.add(id);
+      if (write.sourcePath && tracked.has(write.path)) tracked.set(write.sourcePath, tracked.get(write.path)!);
+    }
+    if (!ids.size) continue;
+    let archived: SourceSnapshot[] = [];
+    try {
+      if (existsSync(join(dir, "sources.json"))) {
+        archived = loadSources(join(dir, "sources.json"), manifest.sourcesHash).sessions;
+      } else {
+        archived = (manifest.transcripts ?? []).filter((item) => ids.has(item.sessionId)).map((item) => {
+          const path = realpathSync(item.path);
+          const rel = relative(realpathSync(dir), path);
+          if (rel.startsWith(`..${sep}`) || rel === ".." || resolve(dir, rel) !== path) {
+            throw new Error("A historical transcript is outside its job folder.");
+          }
+          return { sessionId: item.sessionId, cwd: manifest.cwd, createdAt: item.createdAt,
+            limited: true, entries: parseTranscript(readFileSync(path, "utf8")) };
+        });
+      }
+    } catch {
+      warnings.push(`Job ${manifest.id}: retained sources are missing or invalid.`);
+      continue;
+    }
+    for (const id of ids) {
+      const source = archived.find((item) => item.sessionId === id);
+      if (!source) {
+        warnings.push(`Job ${manifest.id}: source session ${id} is unavailable.`);
+        continue;
+      }
+      if (!sources.has(id)) sources.set(id, source);
+      for (const write of selected) {
+        if ((write.sessionIds ?? [write.sessionId]).includes(id)) {
+          covered.add(tracked.get(write.path) ?? tracked.get(write.sourcePath)!);
+        }
+      }
+    }
+  }
+  for (const path of paths) {
+    if (!covered.has(path)) warnings.push(`${path}: no retained source evidence was found.`);
+  }
+  return { version: 1, sessions: [...sources.values()], warnings };
+}
+
+async function startCheck(pi: ExtensionAPI, args: string, ctx: ExtensionContext): Promise<void> {
+  const tokens = args.trim().split(/\s+/).filter(Boolean);
+  const all = tokens[0] === "--all";
+  if (!tokens.length || (tokens.includes("--all") && (!all || tokens.length !== 1))) {
+    throw new Error("Usage: /dream-check --all or /dream-check <file.md> [file.md ...]");
+  }
+  const root = memoryRoot();
+  assertMaster(root);
+  const paths = all ? memoryTreeEntries(root).map((entry) => entry.path)
+    : [...new Set(tokens.map((path) => path.replace(/^@/, "")))];
+  if (!paths.length) return notify(ctx, "No accepted Markdown memory files exist. No job started.");
+  for (const path of paths) {
+    if (!existsSync(resolveMemoryPath(root, path))) throw new Error(`The memory file does not exist: ${path}`);
+  }
+  const model = selectModel(pi, ctx, "orchestratorModel");
+  if (!model) return notify(ctx, "Set dream.orchestratorModel or dream.model to a concrete provider/model value.", "error");
+  if (!ctx.hasUI) return notify(ctx, "Pi Dream needs an interactive confirmation.", "error");
+  const home = dreamHome();
+  const sources = collectReviewSources(home, root, paths);
+  const approved = await ctx.ui.confirm("Check Pi Dream memory?", [
+    `Check ${all ? "all " : ""}${paths.length} accepted file(s): ${paths.join(", ")}.`,
+    ...(all ? ["This check includes all projects. It can use more model tokens than a selected-file check."] : []),
+    `${sources.sessions.length} retained source session(s), possibly from several projects, and candidate memory will go to orchestrator model ${model}.`,
+    "Only selected files can change. New sessions and pending notes will not be processed.",
+    "Review the branch before you apply it. Missing sources do not prove that memory is wrong.",
+    ...sources.warnings,
+  ].join("\n"));
+  if (!approved) return;
+  await withLock(join(home, ".state-lock"), () => {
+    const id = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
+    const jobDir = join(home, "jobs", id);
+    const candidateRoot = join(jobDir, "candidate");
+    const base = createSnapshot(root, candidateRoot);
+    for (const path of paths) {
+      if (!(path in base.files)) throw new Error(`The selected file is not in accepted master: ${path}`);
+    }
+    atomicJson(join(jobDir, "sources.json"), sources);
+    const manifest: JobManifest = {
+      version: 2, id, cwd: ctx.cwd, createdAt: new Date().toISOString(), model, orchestratorModel: model,
+      concurrency: 1, memoryRoot: root, candidateRoot, jobDir,
+      workerExtension: join(dirname(fileURLToPath(import.meta.url)), "worker-extension.ts"),
+      extensions: workerExtensions(pi), sessionIds: [], noteIds: [], transcripts: [], reviewPaths: paths, base,
+      sourcesHash: sourcesHash(readFileSync(join(jobDir, "sources.json"), "utf8")),
+    };
+    atomicJson(join(jobDir, "manifest.json"), manifest);
+    atomicJson(join(jobDir, "review-progress.json"), { reviewedFiles: 0, totalFiles: paths.length,
+      reviewedPassages: 0, totalPassages: 0, comparisonCurrent: false, complete: false });
+    writeState(jobDir, { version: 1, id, status: "queued", completed: 0, total: 0, updatedAt: new Date().toISOString() });
+    launchRunner(jobDir, ctx);
+  });
+}
+
 async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext): Promise<void> {
   const count = parseBatchCount(args, DEFAULT_BATCH, MAX_BATCH);
   const model = selectModel(pi, ctx, "workerModel");
@@ -376,18 +490,17 @@ async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
     "Start Pi Dream?",
     [
       `${proposed.length} session(s) and ${proposedNotes.length} note(s) from ${ctx.cwd} will go to worker model ${model}.`,
-      `Findings and candidate memory will go to orchestrator model ${orchestratorModel}.`,
+      `Findings, source messages from selected sessions and notes, and candidate memory will go to orchestrator model ${orchestratorModel}.`,
       `Up to ${DEFAULT_CONCURRENCY} worker(s) will run at once.`,
     ].join("\n"),
   );
   if (!approved) return;
-  const prepared = proposed.map((session: { id: string; path: string; cwd: string; created: Date }) => ({
-    session,
-    text: buildTranscript({
-      sessionId: session.id, cwd: session.cwd || ctx.cwd,
-      created: session.created.toISOString(), entries: SessionManager.open(session.path).getBranch(),
-    }),
-  }));
+  const prepared = proposed.map((session) => {
+    const input = { sessionId: session.id, cwd: session.cwd || ctx.cwd,
+      created: session.created.toISOString(), entries: SessionManager.open(session.path).getBranch() };
+    return { session, text: buildTranscript(input), source: buildSource(input) };
+  });
+  const sources = await collectNoteSources(proposedNotes, prepared.map((item) => item.source), ctx.cwd);
   await withLock(join(home, ".state-lock"), () => {
     const available = new Set(availableSessions(home, proposed).map((session: { id: string }) => session.id));
     const selected = prepared.filter(({ session }: { session: { id: string } }) => available.has(session.id));
@@ -413,6 +526,10 @@ async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
     if (notes.length) {
       writeFileSync(join(jobDir, "notes.jsonl"), notes.map((note) => `${JSON.stringify(note)}\n`).join(""), "utf8");
     }
+    const sourceIds = new Set([...selected.map(({ session }) => session.id), ...notes.map((note) => note.sessionId)]);
+    const sourceData = { ...sources, sessions: sources.sessions.filter((source) => sourceIds.has(source.sessionId)) };
+    atomicJson(join(jobDir, "sources.json"), sourceData);
+    const sourceHash = sourcesHash(readFileSync(join(jobDir, "sources.json"), "utf8"));
     const concurrency = Math.max(1, Math.min(DEFAULT_CONCURRENCY, transcripts.length));
     const manifest: JobManifest = {
       version: 2, id, cwd: ctx.cwd, createdAt: new Date().toISOString(), model, orchestratorModel, concurrency,
@@ -420,7 +537,7 @@ async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
       workerExtension: join(dirname(fileURLToPath(import.meta.url)), "worker-extension.ts"),
       extensions: workerExtensions(pi),
       sessionIds: transcripts.map((transcript) => transcript.sessionId),
-      noteIds: notes.map((note) => note.id), transcripts, base,
+      noteIds: notes.map((note) => note.id), transcripts, base, sourcesHash: sourceHash,
     };
     atomicJson(join(jobDir, "manifest.json"), manifest);
     writeState(jobDir, {
@@ -499,9 +616,12 @@ async function resumeDream(args: string, ctx: ExtensionContext): Promise<void> {
   const manifest = readJob<JobManifest>(dir, "manifest.json");
   const approved = await ctx.ui.confirm("Resume Pi Dream?", [
     `Resume job ${manifest.id} with worker model ${manifest.model}?`,
-    `Findings and candidate memory will go to orchestrator model ${manifest.orchestratorModel ?? manifest.model}.`,
+    `Findings, retained source messages, and candidate memory will go to orchestrator model ${manifest.orchestratorModel ?? manifest.model}.`,
     "The runner will keep valid completed sessions and send unfinished transcripts to the worker provider again.",
-    "Failed consolidation will restart from a separate candidate. Accepted memory will not change.",
+    manifest.reviewPaths?.length
+      ? "The runner will validate and reuse saved review work in a separate candidate. Invalid saved work stops resume."
+      : "Failed consolidation will restart from a separate candidate.",
+    "Accepted memory will not change. Each consolidation attempt has a one-hour limit.",
   ].join("\n"));
   if (!approved) return;
   await withLock(join(home, ".state-lock"), async () => {
@@ -569,6 +689,11 @@ function reviewJob(jobDir: string, ctx: ExtensionContext): void {
     log || "No commits.",
     "```",
     "",
+    ...(manifest.reviewPaths ? ["## Selected files", "", ...manifest.reviewPaths.map((path) => `- ${path}`), ""] : []),
+    "## Worker report",
+    "",
+    existsSync(join(jobDir, "report.md")) ? readFileSync(join(jobDir, "report.md"), "utf8") : "No worker report was recorded.",
+    "",
     "## Evidence records",
     "",
     "Each finding ID refers to one line in findings.jsonl in the job folder.",
@@ -580,6 +705,17 @@ function reviewJob(jobDir: string, ctx: ExtensionContext): void {
   ].join("\n");
   writeFileSync(reviewPath, review, "utf8");
   notify(ctx, `Review branch: ${state.branch}\nRepository: ${manifest.memoryRoot}\nReview file: ${reviewPath}`);
+}
+
+function jobProgress(jobDir: string, state: JobState): string {
+  const manifest = readJob<JobManifest>(jobDir, "manifest.json");
+  if (!manifest.reviewPaths) return `${state.completed}/${state.total}`;
+  if (!existsSync(join(jobDir, "review-progress.json"))) {
+    return `coverage unknown; ${manifest.reviewPaths.length} selected files`;
+  }
+  const progress = readJob<{ reviewedFiles: number; totalFiles: number; reviewedPassages: number;
+    totalPassages: number; comparisonCurrent: boolean }>(jobDir, "review-progress.json");
+  return `${progress.reviewedFiles}/${progress.totalFiles} files, ${progress.reviewedPassages}/${progress.totalPassages} passages${progress.comparisonCurrent ? "" : ", comparison pending"}`;
 }
 
 export default function piDream(pi: ExtensionAPI): void {
@@ -601,13 +737,13 @@ export default function piDream(pi: ExtensionAPI): void {
       if (jobDir) {
         const state = readJob<JobState>(jobDir, "state.json");
         const label = ["queued", "running", "ready"].includes(state.status)
-          ? `${state.completed}/${state.total}`
+          ? jobProgress(jobDir, state)
           : state.status;
         text = `🌙 dream: ${label}`;
         if (state.status === "failed" && !notifiedFailures.has(state.id)) {
           notifiedFailures.add(state.id);
           notify(ctx, [
-            `Pi Dream job ${state.id} failed after ${state.completed}/${state.total} sessions.`,
+            `Pi Dream job ${state.id} failed after ${jobProgress(jobDir, state)}${readJob<JobManifest>(jobDir, "manifest.json").reviewPaths ? "" : " sessions"}.`,
             state.error ?? "No error details were recorded.",
             `Run /dream-status ${state.id}.`,
           ].join("\n"), "error");
@@ -662,9 +798,14 @@ export default function piDream(pi: ExtensionAPI): void {
       statement: Type.String({ minLength: 1, maxLength: STATEMENT_LIMIT }),
       memoryPath: Type.Optional(Type.String({ minLength: 1, description: "Relative .md path of the memory file on the same topic" })),
     }),
-    async execute(_id, input, _signal, _onUpdate, ctx) {
+    async execute(toolCallId, input, _signal, _onUpdate, ctx) {
+      const anchor = ctx?.sessionManager?.getBranch?.().findLast((entry) => entry.type === "message" &&
+        entry.message.role === "assistant" && Array.isArray(entry.message.content) &&
+        entry.message.content.some((part) => part.type === "toolCall" &&
+          (part.id === toolCallId || toolCallId.startsWith(`${part.id}/`))));
       const note = writeNote(dreamHome(), {
         ...input, cwd: ctx?.cwd ?? process.cwd(), sessionId: ctx?.sessionManager?.getSessionId?.() ?? "unknown",
+        ...(anchor ? { entryId: anchor.id } : {}),
       });
       return { content: [{ type: "text", text: `Note ${note.id} recorded for the next /dream batch.` }], details: note };
     },
@@ -673,6 +814,11 @@ export default function piDream(pi: ExtensionAPI): void {
   pi.registerCommand("dream", {
     description: "Start a reviewed background memory batch",
     handler: (args, ctx) => startDream(pi, args, ctx),
+  });
+
+  pi.registerCommand("dream-check", {
+    description: "Check memory: /dream-check --all or /dream-check <file.md> [file.md ...]",
+    handler: (args, ctx) => startCheck(pi, args, ctx),
   });
 
   pi.registerCommand("dream-resume", {
@@ -691,7 +837,7 @@ export default function piDream(pi: ExtensionAPI): void {
         if (id && !dirs.length) return notify(ctx, "No Pi Dream job exists.");
         const rows = dirs.map((dir) => {
           const state = readJob<JobState>(dir, "state.json");
-          return `${state.id}: ${state.status}${state.status === "running" && state.phase ? ` ${state.phase}` : ""} (${state.completed}/${state.total})${state.branch ? ` ${state.branch}` : ""}${state.runningSessionIds?.length ? `\nRunning ${state.runningSessionIds.length}: ${state.runningSessionIds.join(", ")}` : ""}${state.error ? `\n${state.error}` : ""}`;
+          return `${state.id}: ${state.status}${state.status === "running" && state.phase ? ` ${state.phase}` : ""} (${jobProgress(dir, state)})${state.branch ? ` ${state.branch}` : ""}${state.runningSessionIds?.length ? `\nRunning ${state.runningSessionIds.length}: ${state.runningSessionIds.join(", ")}` : ""}${state.error ? `\n${state.error}` : ""}`;
         });
         const coverage = sessions ? projectCoverage(dreamHome(), ctx.cwd, sessions) : undefined;
         const notes = sessions ? `Pending notes for ${ctx.cwd}: ${availableNotes(dreamHome(), ctx.cwd).length} available.` : undefined;
@@ -769,5 +915,5 @@ export const __test__ = {
   applyReviewBranch, buildMemoryIndex, buildNoteIndex, buildTranscript, createCandidateSnapshot,
   initializeMemoryStore, loadProcessedSessions, markSessionsProcessed,
   parseBatchCount, redactTranscript, availableSessions, reconcileJobs, publishJob,
-  selectJob, selectModel, workerExtensions, clipMiddle, scopeMatches, assertResumable,
+  selectJob, selectModel, workerExtensions, clipMiddle, scopeMatches, assertResumable, collectReviewSources, collectNoteSources,
 };

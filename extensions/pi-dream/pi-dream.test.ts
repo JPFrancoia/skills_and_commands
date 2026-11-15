@@ -55,6 +55,7 @@ const { default: workerExtension, __test__: workerTest } = await import(
 const { runJob, __test__: runnerTest } = await import("./runner.mjs");
 const { withLock, writeNote, availableNotes, frontMatter } = await import("./store.mjs");
 const { formatMarkdown } = await import("./format-memory.mjs");
+const { buildSource, sourcesHash } = await import("./sources.mjs");
 
 const successfulWorkerEnd = `printf '\\n%s\\n' '{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}'`;
 
@@ -156,7 +157,7 @@ try {
 
   const unavailableFormatter = join(tempRoot, "formatter-without-dependency");
   mkdirSync(unavailableFormatter);
-  for (const name of ["format-memory.mjs", "store.mjs"]) {
+  for (const name of ["format-memory.mjs", "store.mjs", "sources.mjs", "review.mjs"]) {
     writeFileSync(join(unavailableFormatter, name), readFileSync(new URL(`./${name}`, import.meta.url)));
   }
   assert.throws(() => execFileSync(process.execPath, [join(unavailableFormatter, "format-memory.mjs"), formatRoot], {
@@ -329,6 +330,12 @@ try {
     evidence: [{ entryId: "user-1", quote: "Use short replies." }],
   }), /outside the memory store/);
   assert.equal(workerTest.readFindings(findingsPath).length, 1);
+  for (const entryId of ["user-1", "assistant"]) {
+    assert.throws(() => workerTest.appendFinding({ ...findingContext,
+      transcript: `${evidenceTranscript}\n## entry assistant-1 | assistant\nThe API uses port 8080.\n`,
+    }, { kind: "fact", subject: "api port", statement: "The user confirmed port 8080.",
+      evidence: [{ entryId, quote: "The API uses port 8080." }] }), /evidence (quote|entry)/);
+  }
   const editContext = {
     memoryRoot,
     jobDir,
@@ -336,6 +343,12 @@ try {
     findings: [{ id: "f1", ...finding }],
     now: () => "2026-11-02T12:30:00.000Z",
   };
+  await assert.rejects(workerTest.applyMemoryEdit({ ...editContext,
+    findings: [{ id: "f1", ...finding, source: "note", evidence: [] }],
+  }, { action: "write", path: "unverified.md", expectedHash: "missing",
+    content: "---\ndescription: Unverified.\n---\n\nA note is not proof.\n",
+    reason: "Promote a note without checking.", findingIds: ["f1"] }), /lead, not evidence/);
+  assert.equal(existsSync(join(memoryRoot, "unverified.md")), false);
   const created = await workerTest.applyMemoryEdit(editContext, {
     action: "write",
     path: "global/answers.md",
@@ -351,7 +364,7 @@ try {
   const createdRecord = JSON.parse(readFileSync(join(jobDir, "writes.jsonl"), "utf8").trim());
   assert.deepEqual(createdRecord.findingIds, ["f1"]);
   assert.deepEqual(createdRecord.sessionIds, ["session-1"]);
-  assert.deepEqual(createdRecord.evidence, [{ sessionId: "session-1", entryId: "user-1", quote: "Use short replies." }]);
+  assert.deepEqual(createdRecord.evidence, [{ sessionId: "session-1", entryId: "user-1", quote: "Use short replies.", role: "user" }]);
 
   const formattedEdit = await workerTest.applyMemoryEdit(editContext, {
     action: "write", path: "global/formatted.md", expectedHash: "missing", content: formatInput,
@@ -647,6 +660,7 @@ try {
   assert.deepEqual([...commands.keys()].sort(), [
     "dream",
     "dream-apply",
+    "dream-check",
     "dream-discard",
     "dream-resume",
     "dream-review",
@@ -655,7 +669,12 @@ try {
   assert.deepEqual([...tools.keys()], ["dream_note"]);
 
   const noteContext = {
-    cwd: tempRoot, sessionManager: { getSessionId: () => "note-session" },
+    cwd: tempRoot, sessionManager: {
+      getSessionId: () => "note-session",
+      getBranch: () => [{ type: "message", id: "note-anchor", message: { role: "assistant", content: [
+        { type: "toolCall", id: "call-1", name: "dream_note" },
+      ] } }],
+    },
   } as unknown as ExtensionContext;
   const noteResult = await tools.get("dream_note")!.execute("call-1", {
     kind: "preference", subject: "reply style", statement: "Use short replies.", memoryPath: "@global/preferences.md",
@@ -664,6 +683,7 @@ try {
   assert.equal(noteFiles.length, 1);
   const storedNote = JSON.parse(readFileSync(join(dreamHome, "inbox", noteFiles[0]), "utf8"));
   assert.equal(storedNote.sessionId, "note-session");
+  assert.equal(storedNote.entryId, "note-anchor");
   assert.equal(storedNote.cwd, tempRoot);
   assert.equal(storedNote.memoryPath, "global/preferences.md");
   assert.equal(storedNote.kind, "preference");
@@ -697,6 +717,7 @@ try {
       assert.match(confirmation, /Up to 10 worker\(s\) will run at once\./);
       assert.match(confirmation, /worker model openai-codex\/gpt-test/);
       assert.match(confirmation, /orchestrator model openai-codex\/gpt-test/);
+      assert.match(confirmation, /source messages from selected sessions and notes/);
     }
   } finally {
     SessionManager.list = originalList;
@@ -803,6 +824,7 @@ try {
     await refreshStatus();
     assert.equal(statuses.get("dream"), "🌙 dream: idle");
     mkdirSync(statusJob, { recursive: true });
+    writeFileSync(join(statusJob, "manifest.json"), JSON.stringify({ sessionIds: ["one", "two", "three"] }));
     for (const status of ["queued", "running", "ready", "failed", "applied", "discarded"]) {
       writeFileSync(statePath, JSON.stringify({
         id: "status-job", status, completed: 2, total: 3,
@@ -821,6 +843,15 @@ try {
     }));
     await refreshStatus();
     assert.equal(statusNotifications.length, 1, "notify once for each failed job");
+    writeFileSync(join(statusJob, "manifest.json"), JSON.stringify({ sessionIds: [], reviewPaths: ["one.md", "two.md"] }));
+    writeFileSync(statePath, JSON.stringify({ id: "status-job", status: "ready", completed: 0, total: 0 }));
+    await refreshStatus();
+    assert.equal(statuses.get("dream"), "🌙 dream: coverage unknown; 2 selected files");
+    writeFileSync(join(statusJob, "review-progress.json"), JSON.stringify({ reviewedFiles: 1, totalFiles: 2,
+      reviewedPassages: 2, totalPassages: 4, comparisonCurrent: false }));
+    await refreshStatus();
+    assert.equal(statuses.get("dream"), "🌙 dream: 1/2 files, 2/4 passages, comparison pending");
+    writeFileSync(join(statusJob, "manifest.json"), JSON.stringify({ sessionIds: ["one", "two", "three"] }));
     writeFileSync(statePath, "invalid json");
     await refreshStatus();
     assert.equal(statuses.get("dream"), "🌙 dream: unavailable");
@@ -897,17 +928,137 @@ try {
   }
 
   const workerTools: string[] = [];
+  const workerHandlers = new Map<string, { execute: Function }>();
   workerExtension({
-    registerTool(tool: { name: string }) {
+    on() {},
+    registerTool(tool: { name: string; execute: Function }) {
       workerTools.push(tool.name);
+      workerHandlers.set(tool.name, tool);
     },
   } as unknown as ExtensionAPI);
   assert.deepEqual(workerTools.sort(), [
     "dream_finding",
+    "dream_finding_batch",
     "dream_memory_edit",
     "dream_memory_list",
     "dream_memory_read",
+    "dream_review",
+    "dream_source_batch",
+    "dream_source_read",
+    "dream_source_search",
   ]);
+
+  const sourcePath = join(tempRoot, "worker-sources.json");
+  writeFileSync(sourcePath, JSON.stringify({ version: 1, sessions: [buildSource({
+    sessionId: "source-session", cwd: tempRoot, created: "2026-11-15T00:00:00.000Z",
+    entries: [messageEntry("source-user", "user", "Use short replies."),
+      messageEntry("source-result", "toolResult", `${"x".repeat(4_000)}Tests passed.${"y".repeat(4_000)}`)],
+  }), buildSource({ sessionId: "other-session", entries: [messageEntry("other-user", "user", "Other project.")] })] }));
+  const workerEnv = { PI_DREAM_SOURCES: sourcePath, PI_DREAM_SOURCES_HASH: sourcesHash(readFileSync(sourcePath, "utf8")),
+    PI_DREAM_PHASE: "consolidate", PI_DREAM_FINDINGS: join(tempRoot, "checked-findings.jsonl"),
+    PI_DREAM_JOB_DIR: join(tempRoot, "checked-job"), PI_DREAM_JOB_ID: "checked-job", PI_DREAM_SESSION_ID: "",
+    PI_DREAM_REVIEW_FILE: "", PI_DREAM_PARENT_JOB_DIR: tempRoot, PI_DREAM_MEMORY_ROOT: memoryRoot };
+  const previousWorkerEnv = Object.fromEntries(Object.keys(workerEnv).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, workerEnv);
+  try {
+    const search = await workerHandlers.get("dream_source_search")!.execute("search", { query: "Tests passed" });
+    assert.equal(search.details.matches[0].entryId, "source-result");
+    const result = await workerHandlers.get("dream_source_read")!.execute("read", {
+      sessionId: "source-session", entryId: "source-result", offset: 3_900, limit: 200,
+    });
+    assert.match(result.details.text, /Tests passed/);
+    const checked = await workerHandlers.get("dream_finding")!.execute("finding", {
+      sessionId: "source-session", kind: "preference", subject: "reply style", statement: "Use short replies.",
+      evidence: [{ entryId: "source-user", quote: "Use short replies." }],
+    });
+    assert.equal(checked.details.id, "f1");
+    assert.equal(checked.details.evidence[0].role, "user");
+    assert.equal(checked.details.evidence[0].timestamp, "2026-11-02T12:00:00.000Z");
+    await workerHandlers.get("dream_memory_edit")!.execute("edit", {
+      action: "write", path: "checked.md", expectedHash: "missing", findingIds: ["f1"],
+      content: "---\ndescription: Checked preference.\n---\n\nUse short replies.\n", reason: "Keep the user statement.",
+    });
+    assert.match(readFileSync(join(memoryRoot, "checked.md"), "utf8"), /Use short replies/);
+    const { createReview, validateReviewReceipts } = await import("./review.mjs");
+    const batchReviewPath = join(tempRoot, "batch-review.json");
+    const batchMemory = join(tempRoot, "batch-memory");
+    mkdirSync(batchMemory);
+    writeFileSync(join(batchMemory, "checked.md"), readFileSync(join(memoryRoot, "checked.md")));
+    process.env.PI_DREAM_MEMORY_ROOT = batchMemory;
+    const batchReview = createReview({ candidateRoot: batchMemory, reviewPaths: ["checked.md"], sourcesHash: workerEnv.PI_DREAM_SOURCES_HASH });
+    writeFileSync(batchReviewPath, JSON.stringify(batchReview));
+    process.env.PI_DREAM_REVIEW_FILE = batchReviewPath;
+    const batchRead = await workerHandlers.get("dream_source_batch")!.execute("batch-read", { requests: [
+      { action: "search", query: "Use short replies." },
+      { action: "read", sessionId: "source-session", entryId: "source-user" },
+      { action: "read", sessionId: "source-session", entryId: "source-result" },
+      { action: "read", sessionId: "source-session", entryId: "source-result", offset: 13 },
+      { action: "read", sessionId: "missing", entryId: "source-user" },
+      { action: "search", query: "" },
+    ] });
+    assert.equal(batchRead.details[0].result.searchId, "q1");
+    assert.equal(batchRead.details[1].result.text, "Use short replies.");
+    assert.deepEqual(batchRead.details[3], { index: 3, deferred: true });
+    assert.match(batchRead.details[4].error, /not available/);
+    assert.match(batchRead.details[5].error, /search query/);
+    let receipts = JSON.parse(readFileSync(batchReviewPath, "utf8"));
+    assert.equal(receipts.reads.length, 2, "deferred and failed inputs produce no receipts");
+    assert.equal(receipts.searches.length, 1);
+    validateReviewReceipts(receipts, JSON.parse(readFileSync(sourcePath, "utf8")));
+    const validFinding = { sessionId: "source-session", kind: "preference", subject: "reply style", statement: "Use short replies.",
+      evidence: [{ entryId: "source-user", quote: "Use short replies." }] };
+    const batchFindings = await workerHandlers.get("dream_finding_batch")!.execute("batch-findings", { findings: [
+      validFinding,
+      { ...validFinding, evidence: [{ entryId: "source-result", quote: "Use short replies." }] },
+      { ...validFinding, kind: "fact", subject: "test result", statement: "Tests passed.", evidence: [{ entryId: "source-result", quote: "Tests passed." }] },
+    ] });
+    assert.deepEqual(batchFindings.details[0], { index: 0, recorded: true, id: "f2" });
+    assert.match(batchFindings.details[1].error, /not in that entry/);
+    assert.deepEqual(batchFindings.details[2], { index: 2, recorded: true, id: "f3" });
+    assert.ok(batchFindings.content[0].text.length < 500);
+    await workerHandlers.get("dream_review")!.execute("batch-outcomes", { action: "record", outcomes: [{
+      id: "p1", outcome: "supported", reason: "The user stated the preference.", findingIds: ["f2"], searchIds: ["q1"],
+    }] });
+    receipts = JSON.parse(readFileSync(batchReviewPath, "utf8"));
+    assert.equal(receipts.outcomes.p1.findingIds[0], "f2");
+    for (const findings of [[], Array(9).fill(validFinding)]) {
+      await assert.rejects(workerHandlers.get("dream_finding_batch")!.execute("bad-batch", { findings }), /one to 8/);
+    }
+    assert.deepEqual(workerTest.readFindings(workerEnv.PI_DREAM_FINDINGS).map((finding) => finding.id), ["f1", "f2", "f3"]);
+    process.env.PI_DREAM_PHASE = "extract";
+    process.env.PI_DREAM_SESSION_ID = "source-session";
+    await assert.rejects(workerHandlers.get("dream_source_read")!.execute("read", {
+      sessionId: "other-session", entryId: "other-user",
+    }), /not available/);
+    await assert.rejects(workerHandlers.get("dream_finding")!.execute("finding", {
+      sessionId: "other-session", kind: "fact", subject: "wrong", statement: "Wrong session.", evidence: [],
+    }), /available to this worker/);
+    const scopedBatch = await workerHandlers.get("dream_source_batch")!.execute("scoped-batch", { requests: [
+      { action: "search", query: "Other project." },
+      { action: "read", sessionId: "other-session", entryId: "other-user" },
+      { action: "read", sessionId: "source-session", entryId: "source-user" },
+    ] });
+    assert.equal(scopedBatch.details[0].result.matches.length, 0);
+    assert.match(scopedBatch.details[1].error, /not available/);
+    assert.equal(scopedBatch.details[2].result.text, "Use short replies.");
+    const scopedFindings = await workerHandlers.get("dream_finding_batch")!.execute("scoped-findings", { findings: [
+      { ...validFinding, sessionId: "other-session" }, validFinding,
+    ] });
+    assert.match(scopedFindings.details[0].error, /available to this worker/);
+    assert.deepEqual(scopedFindings.details[1], { index: 1, recorded: true });
+    process.env.PI_DREAM_PHASE = "consolidate";
+    const unfiltered = await workerHandlers.get("dream_source_read")!.execute("unfiltered", { sessionId: "other-session", entryId: "other-user" });
+    assert.equal(unfiltered.details.text, "Other project.", "extraction must not mutate the cached source sessions");
+    writeFileSync(sourcePath, "{}");
+    await assert.rejects(workerHandlers.get("dream_source_search")!.execute("search", { query: "Tests passed" }), /changed/);
+    await assert.rejects(workerHandlers.get("dream_source_batch")!.execute("changed-batch", { requests: [{ action: "search", query: "Tests passed" }] }), /changed/);
+    await assert.rejects(workerHandlers.get("dream_finding_batch")!.execute("changed-findings", { findings: [validFinding] }), /changed/);
+  } finally {
+    for (const [key, value] of Object.entries(previousWorkerEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 
   const runnerLive = join(tempRoot, "runner-live");
   const runnerCandidate = join(tempRoot, "runner-candidate");
@@ -1823,12 +1974,14 @@ try {
   assert.deepEqual(await runJob(join(noteOnly.jobDir, "manifest.json"), { piBin: notePi, timeoutMs: 5_000 }), { status: "ready" });
   assert.equal(existsSync(join(noteOnly.jobDir, "prompt-extract")), false);
   const noteConsolidatePrompt = readFileSync(join(noteOnly.jobDir, "prompt-consolidate"), "utf8");
-  assert.match(noteConsolidatePrompt, /2 finding\(s\) marked note are direct statements that a past session recorded with dream_note\. Treat them as high confidence\./);
+  assert.match(noteConsolidatePrompt, /2 finding\(s\) marked note are unverified leads, not evidence\./);
+  assert.doesNotMatch(noteConsolidatePrompt, /high confidence/);
   assert.match(noteConsolidatePrompt, /^- f1 \[fact, note\] \(session s-local\) The API listens on port 8080\.$/m);
-  assert.match(noteConsolidatePrompt, new RegExp(`^  > ${localNote.id}: The API listens on port 8080\\.$`, "m"));
+  assert.match(noteConsolidatePrompt, new RegExp(`Note ${localNote.id}; source entry unknown`));
   const noteFindings = readFileSync(join(noteOnly.jobDir, "findings.jsonl"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
   assert.deepEqual(noteFindings.map((finding) => [finding.id, finding.source, finding.sessionId]), [["f1", "note", "s-local"], ["f2", "note", "s-global"]]);
-  assert.deepEqual(noteFindings[0].evidence, [{ entryId: localNote.id, quote: localNote.statement }]);
+  assert.deepEqual(noteFindings[0].evidence, []);
+  assert.equal(noteFindings[0].noteId, localNote.id);
   assert.equal(git(concurrentMemory, "diff", "--name-only", "master..dream/note-only"), "notes.md");
   git(concurrentMemory, "merge", "--ff-only", "dream/note-only");
   dreamTest.reconcileJobs(noteHome);
@@ -1844,6 +1997,381 @@ try {
   assert.equal(readState(discardNotes.jobDir).status, "discarded");
   assert.equal(existsSync(join(noteHome, "inbox", `${keepNote.id}.json`)), true);
   assert.deepEqual(availableNotes(noteHome, tempRoot).map((note: { id: string }) => note.id), [keepNote.id]);
+
+  // Run a targeted check through the registered command and the real worker tools.
+  const checkHome = join(tempRoot, "check-home");
+  const checkMemory = join(tempRoot, "check-memory");
+  const historyDir = join(checkHome, "jobs", "history");
+  const historyCandidate = join(historyDir, "candidate");
+  dreamTest.initializeMemoryStore(checkMemory);
+  const historyBase = dreamTest.createCandidateSnapshot(checkMemory, historyCandidate);
+  writeFileSync(join(historyCandidate, "target.md"), "---\ndescription: API port.\n---\n\nThe API uses port 8080.\n\n[Details](missing.md)\n");
+  writeFileSync(join(historyCandidate, "unrelated.md"), "---\ndescription: Unrelated.\n---\n\nKeep this file.\n");
+  writeFileSync(join(historyCandidate, "unbacked.md"), "---\ndescription: Old manual note.\n---\n\nKeep this unsupported fact.\n");
+  const historicalSources = { version: 1, sessions: [buildSource({
+    sessionId: "historical", cwd: tempRoot, created: "2026-11-15T00:00:00.000Z", entries: [
+      messageEntry("old-conclusion", "assistant", "The API uses port 8080."),
+      messageEntry("verified-result", "toolResult", `${"x".repeat(2_000)}The verified API port is 9090.${"y".repeat(2_000)}`),
+    ],
+  })], warnings: [] };
+  writeFileSync(join(historyDir, "sources.json"), JSON.stringify(historicalSources));
+  const history = { version: 2, id: "history", jobDir: historyDir, memoryRoot: checkMemory,
+    candidateRoot: historyCandidate, base: historyBase, cwd: tempRoot,
+    sessionIds: ["historical"], transcripts: [], sourcesHash: sourcesHash(JSON.stringify(historicalSources)) };
+  writeFileSync(join(historyDir, "manifest.json"), JSON.stringify(history));
+  writeFileSync(join(historyDir, "state.json"), JSON.stringify({ id: "history", status: "running" }));
+  writeFileSync(join(historyDir, "writes.jsonl"), JSON.stringify({
+    version: 2, action: "write", path: "target.md", sessionIds: ["historical"], findingIds: ["f1"], evidence: [],
+  }) + "\n");
+  const historyCommit = dreamTest.publishJob(history);
+  writeFileSync(join(historyDir, "state.json"), JSON.stringify({ id: "history", status: "ready", publishedCommit: historyCommit }));
+  dreamTest.applyReviewBranch(history);
+  dreamTest.reconcileJobs(checkHome);
+  const retained = dreamTest.collectReviewSources(checkHome, checkMemory, ["target.md", "unbacked.md"]);
+  assert.deepEqual(retained.sessions.map((source) => source.sessionId), ["historical"]);
+  assert.deepEqual(retained.warnings, ["unbacked.md: no retained source evidence was found."]);
+  assert.deepEqual(dreamTest.collectReviewSources(checkHome, concurrentMemory, ["target.md"]).sessions, []);
+  const checkNote = writeNote(checkHome, { kind: "fact", subject: "untouched", statement: "Leave this pending.", cwd: tempRoot, sessionId: "new-session" });
+  const checkPi = join(tempRoot, "check-pi.mjs");
+  writeFileSync(checkPi, [
+    "#!/usr/bin/env node",
+    'import assert from "node:assert/strict";',
+    'import { readFileSync, writeFileSync, appendFileSync } from "node:fs";',
+    'import { join } from "node:path";',
+    `import { createJiti } from ${JSON.stringify(join(dirname(require.resolve("jiti/package.json")), "lib/jiti.mjs"))};`,
+    `const jiti = createJiti(import.meta.url); const { default: worker } = await jiti.import(${JSON.stringify(fileURLToPath(new URL("./worker-extension.ts", import.meta.url)))});`,
+    'const tools = new Map(); const hooks = new Map(); worker({ registerTool: (tool) => tools.set(tool.name, tool), on: (name, handler) => hooks.set(name, handler) });',
+    'const call = (name, input) => tools.get(name).execute(name, input);',
+    'const prompt = readFileSync(0, "utf8");',
+    'assert.match(prompt, /targeted check/);',
+    'assert.equal(process.env.PI_DREAM_PHASE, "consolidate");',
+    'appendFileSync(join(process.env.PI_DREAM_PARENT_JOB_DIR, "check-calls"), "consolidate\\n");',
+    'const matches = (await call("dream_source_search", { query: "verified API port" })).details.matches;',
+    'assert.equal(matches.length, 1);',
+    'const source = (await call("dream_source_read", { sessionId: matches[0].sessionId, entryId: matches[0].entryId, offset: matches[0].offset, limit: 300 })).details;',
+    'assert.match(source.text, /The verified API port is 9090/);',
+    'const finding = (await call("dream_finding", { sessionId: source.sessionId, kind: "correction", subject: "api port", memoryPath: "target.md", statement: "The API uses port 9090.", evidence: [{ entryId: source.entryId, quote: "The verified API port is 9090." }] })).details;',
+    'const files = JSON.parse((await call("dream_memory_list", {})).content[0].text);',
+    'const input = { action: "write", path: "target.md", expectedHash: files.find((file) => file.path === "target.md").hash, content: "---\\ndescription: API port.\\n---\\n\\nThe API uses port 9090.\\n", findingIds: [finding.id], reason: "Use the observed result." };',
+    'if (!JSON.parse(process.env.PI_DREAM_REVIEW_PATHS).includes("unrelated.md")) await assert.rejects(call("dream_memory_edit", { ...input, path: "unrelated.md", expectedHash: files.find((file) => file.path === "unrelated.md").hash }), /selected memory files/);',
+    'await assert.rejects(call("dream_memory_edit", { ...input, path: "new.md", expectedHash: "missing" }), /selected memory files/);',
+    'await call("dream_memory_edit", input);',
+    'const continuation = await hooks.get("agent_before_settle")({ entries: [] }); assert.equal(continuation.continue, true);',
+    'assert.match(continuation.entries[0].content, /all selected files/);',
+    'const manifest = JSON.parse(readFileSync(join(process.env.PI_DREAM_PARENT_JOB_DIR, "manifest.json")));',
+    'for (const path of manifest.reviewPaths) await call("dream_memory_read", { path });',
+    'let cursor; const pending = [];',
+    'do { const page = (await call("dream_review", { action: "status", cursor })).details; pending.push(...page.pending); cursor = page.nextCursor; } while (cursor);',
+    'for (const passage of pending) {',
+    '  const search = (await call("dream_source_search", { query: passage.text.slice(0, 200) })).details;',
+    '  for (const match of search.matches) await call("dream_source_read", { sessionId: match.sessionId, entryId: match.entryId, offset: match.offset });',
+    '  const target = passage.path === "target.md" && passage.text.includes("API uses port");',
+    '  const recorded = await call("dream_review", { action: "record", outcomes: [{ id: passage.id, outcome: target ? "corrected" : "unsupported", reason: target ? "Compared the old claim with the observed port." : "The retained sources do not establish this passage. Preserved it.", findingIds: target ? [finding.id] : [], searchIds: [search.searchId] }] });',
+    '  assert.equal(recorded.details.pending, undefined); assert.ok(recorded.content[0].text.length < 512);',
+    '}',
+    'await call("dream_review", { action: "finish", comparison: "Compared every selected file. The port correction does not conflict with other files. Preserved unsupported claims. Removed the obsolete link. No duplicate content needs changes." });',
+    'assert.equal(await hooks.get("agent_before_settle")({ entries: [] }), undefined);',
+    'console.log(JSON.stringify({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "target.md: corrected the port from a tool result. Removed an obsolete link. unbacked.md: no source evidence, kept unchanged." }] }] }));',
+  ].join("\n"));
+  chmodSync(checkPi, 0o755);
+  const oldCheckPi = process.env.PI_DREAM_PI_BIN;
+  process.env.PI_DREAM_HOME = checkHome;
+  process.env.PI_DREAM_MEMORY_ROOT = checkMemory;
+  process.env.PI_DREAM_PI_BIN = checkPi;
+  try {
+    for (const invalid of ["", "../outside.md", "/absolute.md", "unknown.md", "--all target.md", "target.md --all", "--all --all"]) {
+      await assert.rejects(commands.get("dream-check")!.handler(invalid, { ...modelContext, ...commandContext }));
+    }
+    await commands.get("dream-check")!.handler("target.md", {
+      ...modelContext, ...commandContext, ui: { ...commandContext.ui, confirm: async () => false },
+    });
+    assert.deepEqual(readdirSync(join(checkHome, "jobs")), ["history"]);
+    let checkConfirmation = "";
+    await commands.get("dream-check")!.handler("@target.md unbacked.md target.md", {
+      ...modelContext, ...commandContext, ui: { ...commandContext.ui, confirm: async (_title: string, text: string) => {
+        checkConfirmation = text;
+        return true;
+      } },
+    });
+    assert.match(checkConfirmation, /1 retained source session/);
+    assert.match(checkConfirmation, /New sessions and pending notes will not be processed/);
+    const id = readdirSync(join(checkHome, "jobs")).find((name) => name !== "history")!;
+    const dir = join(checkHome, "jobs", id);
+    const ready = await waitForJob(dir);
+    assert.equal(ready.status, "ready", ready.error);
+    const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8"));
+    assert.deepEqual(manifest.reviewPaths, ["target.md", "unbacked.md"]);
+    assert.deepEqual(manifest.sessionIds, []);
+    assert.deepEqual(manifest.noteIds, []);
+    assert.deepEqual(manifest.transcripts, []);
+    assert.equal(git(checkMemory, "rev-parse", "HEAD"), historyCommit);
+    assert.equal(git(checkMemory, "diff", "--name-only", `master..dream/${id}`), "target.md");
+    assert.match(git(checkMemory, "show", `dream/${id}:target.md`), /9090/);
+    assert.match(readFileSync(join(checkMemory, "target.md"), "utf8"), /8080/);
+    const checkFindings = readFileSync(join(dir, "findings.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(checkFindings.length, 1);
+    assert.equal(checkFindings[0].evidence[0].role, "toolResult");
+    const report = readFileSync(join(dir, "report.md"), "utf8");
+    assert.match(report, /no retained source evidence/);
+    assert.match(report, /missing local Markdown target missing.md/);
+    assert.match(report, /corrected the port/);
+    assert.match(report, /2\/2 files/);
+    assert.equal(JSON.parse(readFileSync(join(dir, "review-progress.json"), "utf8")).complete, true);
+    await commands.get("dream-status")!.handler(id, commandContext);
+    assert.match(notifications.at(-1)!, /2\/2 files/);
+    assert.doesNotMatch(notifications.at(-1)!, /\(0\/0\)/);
+    await commands.get("dream-review")!.handler(id, commandContext);
+    assert.match(readFileSync(join(dir, "diff.md"), "utf8"), /corrected the port/);
+    assert.match(readFileSync(join(dir, "diff.md"), "utf8"), /## Selected files/);
+    // Publication retry reuses the completed consolidation and its added findings.
+    writeFileSync(join(dir, "state.json"), JSON.stringify({ ...JSON.parse(readFileSync(join(dir, "state.json"), "utf8")), status: "failed" }));
+    assert.deepEqual(await runJob(join(dir, "manifest.json"), { piBin: checkPi, resume: true }), { status: "ready" });
+    assert.equal(readFileSync(join(dir, "check-calls"), "utf8"), "consolidate\n");
+    assert.equal(readFileSync(join(dir, "findings.jsonl"), "utf8").trim().split("\n").length, 1);
+    const checkCompletion = JSON.parse(readFileSync(join(dir, "workers", "consolidate", "result.json"), "utf8"));
+    const savedReview = readFileSync(checkCompletion.reviewPath, "utf8");
+    writeFileSync(checkCompletion.reviewPath, savedReview + " ");
+    writeFileSync(join(dir, "state.json"), JSON.stringify({ ...JSON.parse(readFileSync(join(dir, "state.json"), "utf8")), status: "failed" }));
+    const changedReview = await runJob(join(dir, "manifest.json"), { piBin: checkPi, resume: true });
+    assert.equal(changedReview.status, "failed");
+    assert.match(changedReview.error, /review completion record changed/);
+    assert.equal(readFileSync(join(dir, "check-calls"), "utf8"), "consolidate\n");
+    writeFileSync(checkCompletion.reviewPath, savedReview);
+    assert.equal((await runJob(join(dir, "manifest.json"), { piBin: checkPi, resume: true })).status, "ready");
+    await commands.get("dream-apply")!.handler(id, commandContext);
+    assert.match(readFileSync(join(checkMemory, "target.md"), "utf8"), /9090/);
+    assert.deepEqual(dreamTest.loadProcessedSessions(join(checkHome, "state.json")), ["historical"]);
+    assert.equal(existsSync(join(checkHome, "inbox", `${checkNote.id}.json`)), true);
+    assert.equal(git(checkMemory, "status", "--porcelain"), "");
+
+    mkdirSync(join(checkMemory, "nested"));
+    mkdirSync(join(checkMemory, ".hidden"));
+    writeFileSync(join(checkMemory, "nested", "Other note.MD"), "---\ndescription: Another project.\nscope: /another-project\n---\n\nKeep this fact.\n");
+    writeFileSync(join(checkMemory, ".hidden", "private.md"), "Hidden.\n");
+    writeFileSync(join(checkMemory, ".private.md"), "Hidden.\n");
+    writeFileSync(join(checkMemory, "plain.txt"), "Not memory.\n");
+    symlinkSync("target.md", join(checkMemory, "alias.md"));
+    git(checkMemory, "add", ".");
+    git(checkMemory, "-c", "user.name=Test", "-c", "user.email=test@local", "commit", "-qm", "Add check-all fixtures");
+    writeFileSync(join(checkMemory, "untracked.md"), "Not accepted.\n");
+    const allBase = git(checkMemory, "rev-parse", "HEAD");
+    const allStatus = git(checkMemory, "status", "--porcelain");
+    const previousJobs = readdirSync(join(checkHome, "jobs"));
+    const allPaths = ["README.md", "nested/Other note.MD", "target.md", "unbacked.md", "unrelated.md"];
+    await commands.get("dream-check")!.handler("--all", {
+      ...modelContext, ...commandContext, ui: { ...commandContext.ui, confirm: async (_title: string, text: string) => {
+        assert.match(text, /Check all 5 accepted file\(s\)/);
+        assert.match(text, /all projects/);
+        assert.match(text, /more model tokens/);
+        return false;
+      } },
+    });
+    assert.deepEqual(readdirSync(join(checkHome, "jobs")), previousJobs);
+    await commands.get("dream-check")!.handler("  --all  ", { ...modelContext, ...commandContext });
+    const allId = readdirSync(join(checkHome, "jobs")).find((name) => !previousJobs.includes(name))!;
+    const allDir = join(checkHome, "jobs", allId);
+    const allReady = await waitForJob(allDir);
+    assert.equal(allReady.status, "ready", allReady.error);
+    const allManifest = JSON.parse(readFileSync(join(allDir, "manifest.json"), "utf8"));
+    assert.deepEqual(allManifest.reviewPaths, allPaths);
+    await commands.get("dream-status")!.handler(allId, commandContext);
+    assert.match(notifications.at(-1)!, /5\/5 files/);
+    assert.equal(JSON.parse(readFileSync(join(allDir, "review-progress.json"), "utf8")).complete, true);
+    assert.deepEqual(Object.keys(allManifest.base.files), allPaths);
+    assert.deepEqual(allManifest.sessionIds, []);
+    assert.deepEqual(allManifest.noteIds, []);
+    assert.equal(git(checkMemory, "rev-parse", "HEAD"), allBase);
+    assert.equal(git(checkMemory, "status", "--porcelain"), allStatus);
+    assert.equal(git(checkMemory, "diff", "--name-only", `master..dream/${allId}`), "");
+    assert.deepEqual(dreamTest.loadProcessedSessions(join(checkHome, "state.json")), ["historical"]);
+    assert.equal(existsSync(join(checkHome, "inbox", `${checkNote.id}.json`)), true);
+    await commands.get("dream-review")!.handler(allId, commandContext);
+    assert.match(readFileSync(join(allDir, "diff.md"), "utf8"), /nested\/Other note\.MD/);
+
+    const emptyMemory = join(tempRoot, "check-empty-memory");
+    mkdirSync(emptyMemory);
+    git(emptyMemory, "init", "-qb", "master");
+    git(emptyMemory, "-c", "user.name=Test", "-c", "user.email=test@local", "commit", "--allow-empty", "-qm", "Empty memory");
+    process.env.PI_DREAM_MEMORY_ROOT = emptyMemory;
+    const jobsBeforeEmpty = readdirSync(join(checkHome, "jobs"));
+    await commands.get("dream-check")!.handler("--all", {
+      ...modelContext, ...commandContext, ui: { ...commandContext.ui, confirm: async () => assert.fail("No confirmation is needed for empty memory.") },
+    });
+    assert.match(notifications.at(-1)!, /No accepted Markdown memory files exist/);
+    assert.deepEqual(readdirSync(join(checkHome, "jobs")), jobsBeforeEmpty);
+  } finally {
+    if (oldCheckPi === undefined) delete process.env.PI_DREAM_PI_BIN;
+    else process.env.PI_DREAM_PI_BIN = oldCheckPi;
+  }
+
+  // Exercise the real host continuation boundary with a local provider and no network calls.
+  const hostMemory = join(tempRoot, "host-memory");
+  dreamTest.initializeMemoryStore(hostMemory);
+  writeFileSync(join(hostMemory, "second.md"), "---\ndescription: Second file.\n---\n\n" + Array.from({ length: 5 }, (_, index) => `Keep unsupported fact ${index}.`).join("\n\n"));
+  git(hostMemory, "add", ".");
+  git(hostMemory, "-c", "user.name=Test", "-c", "user.email=test@local", "commit", "-qm", "Second file");
+  const hostPackage = join(execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim(), "@earendil-works/pi-coding-agent");
+  const localProvider = join(tempRoot, "review-provider.ts");
+  writeFileSync(localProvider, `
+import { createAssistantMessageEventStream } from ${JSON.stringify(join(hostPackage, "node_modules/@earendil-works/pi-ai/dist/index.js"))};
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
+export default function(pi) {
+  let turn = 0;
+  let pending = [];
+  pi.registerProvider("dream-local-test", {
+    baseUrl: "http://127.0.0.1:1", api: "dream-local-test", apiKey: "local-test-only",
+    models: [{ id: "review", name: "Local review test", reasoning: false, input: ["text"],
+      contextWindow: 200000, maxTokens: 10000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+    streamSimple(model, context) {
+      const stream = createAssistantMessageEventStream();
+      const n = turn++;
+      appendFileSync(join(process.env.PI_DREAM_PARENT_JOB_DIR, "host-turns"), JSON.stringify({ n, pid: process.pid }) + "\\n");
+      let calls = [];
+      if (process.env.DREAM_TEST_STOP !== "always") {
+        if (n === 1) calls = [["dream_memory_read", { path: "README.md" }], ["dream_memory_read", { path: "second.md" }], ["dream_review", { action: "status" }]];
+        if (n === 2) {
+          const result = context.messages.findLast((message) => message.role === "toolResult" && message.toolName === "dream_review");
+          const response = JSON.parse(result.content[0].text);
+          if (response.nextCursor) throw new Error("The small host fixture must fit on one page.");
+          pending = response.pending;
+        }
+        if (process.env.DREAM_TEST_STOP === "batch") {
+          if (n === 2) calls = [["dream_source_batch", { requests: [{ action: "search", query: "exploratory" }, ...pending.map((passage) => ({ action: "search", query: passage.text.slice(0, 200) }))] }]];
+          if (n === 3) calls = [["dream_source_batch", { requests: pending.map((passage) => ({ action: "read", sessionId: "batch-session", entryId: passage.id })) }]];
+          if (n === 4) calls = [["dream_finding_batch", { findings: pending.map((passage) => ({ sessionId: "batch-session", kind: "fact",
+            subject: "batch evidence", statement: passage.text.slice(0, 1000), evidence: [{ entryId: passage.id, quote: passage.text.slice(0, 500) }] })) }]];
+          if (n === 5) {
+            const result = context.messages.findLast((message) => message.role === "toolResult" && message.toolName === "dream_finding_batch");
+            const findings = JSON.parse(result.content[0].text);
+            calls = [["dream_review", { action: "record", outcomes: pending.map((passage, index) => ({ id: passage.id, outcome: "supported",
+              reason: "The retained source states this claim.", findingIds: [findings[index].id], searchIds: [] })) }]];
+          }
+          if (n === 6) calls = [["dream_review", { action: "close_searches", closures: [{ id: "q1", reason: "The broad exploratory query is not needed. Each passage has separate source evidence." }] }]];
+          if (n === 7) calls = [["dream_review", { action: "finish", comparison: "Compared all selected files after the batch checks. No changes are needed." }]];
+        } else {
+        const progressing = process.env.DREAM_TEST_STOP === "progress";
+        const partial = process.env.DREAM_TEST_STOP === "partial";
+        const selected = partial ? pending.slice(0, 1) : progressing ? pending.slice((n - 2) / 2, n / 2) : pending;
+        if ((progressing && n >= 2 && n % 2 === 0 && n <= pending.length * 2) || (!progressing && n === 2)) {
+          calls = [["dream_review", { action: "record", outcomes: selected.map((passage) => ({ id: passage.id,
+            outcome: "unsupported", reason: "This isolated job has no retained source sessions. Preserved the passage.", findingIds: [], searchIds: [] })) }]];
+        }
+        if (!partial && n === (progressing ? pending.length * 2 + 2 : 3)) calls = [["dream_review", { action: "finish", comparison: "Compared both selected files together. No contradictions, duplicates, or broken local links were found. All source evidence is unavailable." }]];
+        }
+      }
+      const message = { role: "assistant", api: model.api, provider: model.provider, model: model.id,
+        content: [], stopReason: "pending", timestamp: Date.now(),
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+      stream.push({ type: "start", partial: message });
+      for (const [name, args] of calls) {
+        const index = message.content.length;
+        const toolCall = { type: "toolCall", id: "call-" + n + "-" + index, name, arguments: args };
+        message.content.push(toolCall);
+        stream.push({ type: "toolcall_start", contentIndex: index, partial: message });
+        stream.push({ type: "toolcall_delta", contentIndex: index, delta: JSON.stringify(args), partial: message });
+        stream.push({ type: "toolcall_end", contentIndex: index, toolCall, partial: message });
+      }
+      if (!calls.length) {
+        message.content.push({ type: "text", text: n === 0 ? "Stopped before review." : "Finished." });
+        stream.push({ type: "text_start", contentIndex: 0, partial: message });
+        stream.push({ type: "text_delta", contentIndex: 0, delta: message.content[0].text, partial: message });
+        stream.push({ type: "text_end", contentIndex: 0, content: message.content[0].text, partial: message });
+      }
+      message.stopReason = calls.length ? "toolUse" : "stop";
+      stream.push({ type: "done", reason: message.stopReason, message });
+      stream.end();
+      return stream;
+    },
+  });
+}
+`);
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousStop = process.env.DREAM_TEST_STOP;
+  process.env.PI_CODING_AGENT_DIR = join(tempRoot, "isolated-host-agent");
+  try {
+    for (const mode of ["once", "progress", "always", "partial", "batch"]) {
+      const alwaysStop = mode === "always";
+      process.env.DREAM_TEST_STOP = mode;
+      const id = `host-${mode}`;
+      const jobDir = join(tempRoot, id);
+      const candidateRoot = join(jobDir, "candidate");
+      const base = dreamTest.createCandidateSnapshot(hostMemory, candidateRoot);
+      const manifest = { version: 2, id, jobDir, candidateRoot, memoryRoot: hostMemory, base,
+        model: "dream-local-test/review", orchestratorModel: "dream-local-test/review", cwd: tempRoot,
+        workerExtension: fileURLToPath(new URL("./worker-extension.ts", import.meta.url)), extensions: [localProvider],
+        sessionIds: [], transcripts: [], reviewPaths: ["README.md", "second.md"], sourcesHash: undefined as string | undefined };
+      if (mode === "batch") {
+        const { createReview } = await import("./review.mjs");
+        const entries = createReview(manifest).files.flatMap((file) => file.passages.map((passage) => ({ entryId: passage.id, role: "user", text: passage.text })));
+        entries.push(...Array.from({ length: 21 }, (_, index) => ({ entryId: `explore-${index}`, role: "user", text: "Unrelated exploratory result." })));
+        const text = JSON.stringify({ version: 1, sessions: [{ sessionId: "batch-session", entries }] });
+        writeFileSync(join(jobDir, "sources.json"), text);
+        manifest.sourcesHash = sourcesHash(text);
+      }
+      writeFileSync(join(jobDir, "manifest.json"), JSON.stringify(manifest));
+      writeFileSync(join(jobDir, "state.json"), JSON.stringify({ id, status: "queued", completed: 0, total: 0 }));
+      const result = await runJob(join(jobDir, "manifest.json"), { piBin: join(hostPackage, "dist/bundle/cli.js"), timeoutMs: 30_000 });
+      assert.equal(result.status, alwaysStop || mode === "partial" ? "failed" : "ready", result.error);
+      const turns = readFileSync(join(jobDir, "host-turns"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      assert.equal(new Set(turns.map((turn) => turn.pid)).size, 1, "continue in the same worker process");
+      const progress = JSON.parse(readFileSync(join(jobDir, "review-progress.json"), "utf8"));
+      assert.equal(turns.length, mode === "batch" ? 9 : mode === "partial" ? 8 : mode === "progress" ? progress.totalPassages * 2 + 4 : alwaysStop ? 4 : 5);
+      const workerLog = readFileSync(join(jobDir, "workers", "consolidate", readdirSync(join(jobDir, "workers", "consolidate")).find((name) => name.startsWith("attempt-"))!, "worker.log"), "utf8");
+      const events = workerLog.split("\n").filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+      if (mode === "progress") assert.ok(events.filter((event) => event.type === "agent_start").length > 4);
+      if (mode === "batch") {
+        const results = events.filter((event) => event.type === "message_end" && event.message?.role === "toolResult");
+        assert.ok(results.every((event) => !event.message.isError), JSON.stringify(results.filter((event) => event.message.isError)));
+        assert.equal(results.filter((event) => event.message.toolName === "dream_source_batch").length, 2);
+        assert.equal(results.filter((event) => event.message.toolName === "dream_finding_batch").length, 1);
+        const { validateReviewReceipts } = await import("./review.mjs");
+        const review = JSON.parse(readFileSync(join(jobDir, "review.json"), "utf8"));
+        assert.equal(review.reads.length, progress.totalPassages);
+        assert.equal(review.searches.length, progress.totalPassages + 1);
+        assert.equal(progress.closedSearchCount, 1);
+        assert.equal(review.searches[0].pages[0].nextOffset, 20);
+        assert.match(review.searches[0].closedReason, /not needed/);
+        assert.match(readFileSync(join(jobDir, "report.md"), "utf8"), /broad exploratory query/);
+        validateReviewReceipts(review, JSON.parse(readFileSync(join(jobDir, "sources.json"), "utf8")));
+        assert.equal(readFileSync(join(jobDir, "findings.jsonl"), "utf8").trim().split("\n").length, progress.totalPassages);
+      }
+      for (const event of events.filter((event) => event.type === "message_end" && event.message?.role === "toolResult" && event.message.toolName === "dream_review")) {
+        const response = event.message.content[0].text;
+        if (!JSON.parse(response).pending) assert.ok(response.length < 512);
+      }
+      assert.equal(git(hostMemory, "rev-parse", "HEAD"), base.baseCommit);
+      if (mode === "partial") {
+        assert.equal(progress.reviewedPassages, 1);
+        assert.throws(() => git(hostMemory, "rev-parse", `refs/heads/dream/${id}`));
+        process.env.DREAM_TEST_STOP = "once";
+        const resumed = await runJob(join(jobDir, "manifest.json"), { piBin: join(hostPackage, "dist/bundle/cli.js"), timeoutMs: 30_000, resume: true });
+        assert.equal(resumed.status, "ready", resumed.error);
+        const resumedTurns = readFileSync(join(jobDir, "host-turns"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+        assert.equal(new Set(resumedTurns.map((turn) => turn.pid)).size, 2);
+        const completion = JSON.parse(readFileSync(join(jobDir, "workers", "consolidate", "result.json"), "utf8"));
+        const resumedEvents = readFileSync(join(dirname(completion.reviewPath), "worker.log"), "utf8").split("\n")
+          .filter((line) => line.startsWith("{")).map((line) => JSON.parse(line));
+        const firstStatus = resumedEvents.find((event) => event.type === "message_end" && event.message?.role === "toolResult" && event.message.toolName === "dream_review");
+        assert.equal(JSON.parse(firstStatus.message.content[0].text).reviewedPassages, 1);
+        assert.equal(JSON.parse(firstStatus.message.content[0].text).pending.some((passage) => passage.id === "p1"), false);
+        assert.equal(JSON.parse(readFileSync(join(jobDir, "review-progress.json"), "utf8")).complete, true);
+        assert.equal(git(hostMemory, "rev-parse", "HEAD"), base.baseCommit);
+      } else if (alwaysStop) {
+        assert.match(result.error, /combined review is incomplete/);
+        assert.throws(() => git(hostMemory, "rev-parse", `refs/heads/dream/${id}`));
+      } else {
+        assert.equal(JSON.parse(readFileSync(join(jobDir, "review-progress.json"), "utf8")).complete, true);
+        assert.equal(git(hostMemory, "diff", "--name-only", `master..dream/${id}`), "");
+      }
+    }
+  } finally {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    if (previousStop === undefined) delete process.env.DREAM_TEST_STOP;
+    else process.env.DREAM_TEST_STOP = previousStop;
+  }
 
   process.env.PI_DREAM_HOME = dreamHome;
   process.env.PI_DREAM_MEMORY_ROOT = memoryRoot;

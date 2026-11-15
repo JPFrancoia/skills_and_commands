@@ -105,18 +105,23 @@ function hash(content) {
   return createHash("sha256").update(content).digest("hex");
 }
 
+export function memoryTreeEntries(root, treeish = "refs/heads/master") {
+  return git(root, ["ls-tree", "-r", "-z", treeish]).split("\0").filter(Boolean).flatMap((row) => {
+    const tab = row.indexOf("\t");
+    const [mode, type, object] = row.slice(0, tab).split(" ");
+    const path = row.slice(tab + 1);
+    return type === "blob" && ["100644", "100755"].includes(mode) && memoryPath(path)
+      ? [{ object, path }] : [];
+  });
+}
+
 /** @returns {{version: 1, baseCommit: string, files: Record<string, string>}} */
 export function createSnapshot(root, candidateRoot, treeish = "refs/heads/master") {
   const baseCommit = git(root, ["rev-parse", treeish]);
   mkdirSync(candidateRoot, { recursive: true });
   if (readdirSync(candidateRoot).length) throw new Error("The candidate folder is not empty.");
   const files = {};
-  const rows = git(root, ["ls-tree", "-r", "-z", baseCommit]).split("\0").filter(Boolean);
-  for (const row of rows) {
-    const tab = row.indexOf("\t");
-    const [mode, type, object] = row.slice(0, tab).split(" ");
-    const path = row.slice(tab + 1);
-    if (type !== "blob" || !["100644", "100755"].includes(mode) || !memoryPath(path)) continue;
+  for (const { object, path } of memoryTreeEntries(root, baseCommit)) {
     const content = execFileSync("git", ["-C", root, "cat-file", "blob", object]);
     mkdirSync(dirname(join(candidateRoot, path)), { recursive: true });
     writeFileSync(join(candidateRoot, path), content);
@@ -281,6 +286,7 @@ export const STATEMENT_LIMIT = 1_000;
 
 function validNote(note) {
   return note && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(note.id ?? "") && NOTE_KINDS.includes(note.kind) &&
+    (note.entryId === undefined || (typeof note.entryId === "string" && !!note.entryId.trim())) &&
     typeof note.subject === "string" && note.subject.trim() && note.subject.length <= SUBJECT_LIMIT &&
     typeof note.statement === "string" && note.statement.trim() && note.statement.length <= STATEMENT_LIMIT &&
     (note.memoryPath === undefined || (typeof note.memoryPath === "string" && memoryPath(note.memoryPath))) &&
@@ -291,7 +297,7 @@ export function writeNote(home, input) {
   const id = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
   const note = { id, kind: input.kind, subject: input.subject.trim(), statement: input.statement.trim(),
     ...(input.memoryPath ? { memoryPath: input.memoryPath.replace(/^@/, "") } : {}),
-    ...(input.cwd ? { cwd: input.cwd } : {}), sessionId: input.sessionId, createdAt: new Date().toISOString() };
+    ...(input.cwd ? { cwd: input.cwd } : {}), ...(input.entryId ? { entryId: input.entryId } : {}), sessionId: input.sessionId, createdAt: new Date().toISOString() };
   if (!validNote(note)) throw new Error("The note is invalid. Check kind, subject, statement, and memoryPath.");
   writeJson(join(home, "inbox", `${id}.json`), note);
   return note;
