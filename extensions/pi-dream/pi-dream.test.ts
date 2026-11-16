@@ -171,6 +171,12 @@ try {
   assert.equal(dreamTest.parseBatchCount("100", 10, 100), 100);
   assert.equal(dreamTest.parseBatchCount("999", 10, 100), 100);
   assert.throws(() => dreamTest.parseBatchCount("none", 10, 100), /number/);
+  assert.deepEqual(dreamTest.parseDreamArgs(""), { all: false, count: 10 });
+  assert.deepEqual(dreamTest.parseDreamArgs("--all"), { all: true, count: 10 });
+  assert.deepEqual(dreamTest.parseDreamArgs("--all 20"), { all: true, count: 20 });
+  assert.deepEqual(dreamTest.parseDreamArgs("999 --all"), { all: true, count: 100 });
+  assert.throws(() => dreamTest.parseDreamArgs("--all 5 6"), /number/);
+  assert.throws(() => dreamTest.parseDreamArgs("--every"), /number/);
 
   const branch = [
     messageEntry("sys-1", "system", "Private system text"),
@@ -399,6 +405,25 @@ try {
   ].join("\n"));
   const jitiCli = join(dirname(require.resolve("jiti/package.json")), "lib/jiti-cli.mjs");
   execFileSync(process.execPath, [jitiCli, missingFormatterTest], { stdio: ["ignore", "pipe", "pipe"] });
+
+  // Without the formatter, a command stops before the confirmation and creates no job.
+  writeFileSync(join(unavailableFormatter, "index.ts"), readFileSync(new URL("./index.ts", import.meta.url)));
+  const missingFormatterCommandTest = join(unavailableFormatter, "missing-formatter-command.test.ts");
+  writeFileSync(missingFormatterCommandTest, [
+    'import assert from "node:assert/strict";',
+    'import { existsSync } from "node:fs";',
+    `process.env.PI_DREAM_HOME = ${JSON.stringify(join(unavailableFormatter, "home"))};`,
+    `process.env.PI_DREAM_MEMORY_ROOT = ${JSON.stringify(formatRoot)};`,
+    'const { default: piDream } = await import("./index.ts");',
+    'const commands = new Map();',
+    'piDream({ registerCommand: (name, options) => commands.set(name, options), registerTool() {}, on() {}, getSettings: () => ({ dream: { model: "test/model" } }) });',
+    'const ctx = { cwd: process.cwd(), hasUI: true, modelRegistry: { find: () => ({ api: "test" }) }, ui: { confirm: async () => assert.fail("No confirmation is expected."), notify() {} } };',
+    'for (const [name, args] of [["dream", ""], ["dream", "--all"], ["dream-check", "--all"]]) {',
+    '  await assert.rejects(commands.get(name).handler(args, ctx), /Run npm ci in the pi-dream package directory/);',
+    '}',
+    'assert.equal(existsSync(process.env.PI_DREAM_HOME), false);',
+  ].join("\n"));
+  execFileSync(process.execPath, [jitiCli, missingFormatterCommandTest], { stdio: ["ignore", "pipe", "pipe"] });
   assert.equal(readFileSync(formatPath, "utf8"), formatInput);
   assert.equal(existsSync(join(unavailableFormatter, "writes.jsonl")), false);
   assert.equal(existsSync(join(formatRoot, ".edit-lock")), false);
@@ -721,6 +746,40 @@ try {
     }
   } finally {
     SessionManager.list = originalList;
+  }
+
+  // --all adds sessions and notes from sub-folders of the working directory.
+  const originalListAll = SessionManager.listAll;
+  const subNote = writeNote(dreamHome, {
+    kind: "fact", subject: "sub note", statement: "A fact.", cwd: join(tempRoot, "sub"), sessionId: "sub-session",
+  });
+  try {
+    SessionManager.list = async () => [
+      { id: "exact-session", cwd: tempRoot, modified: new Date(2) },
+    ] as Awaited<ReturnType<typeof SessionManager.list>>;
+    SessionManager.listAll = (async () => [
+      { id: "exact-session", cwd: tempRoot, modified: new Date(2) },
+      { id: "sub-session", cwd: join(tempRoot, "sub"), modified: new Date(1) },
+      { id: "sibling-session", cwd: `${tempRoot}-sibling`, modified: new Date(0) },
+      { id: "parent-session", cwd: dirname(tempRoot), modified: new Date(0) },
+    ]) as unknown as typeof SessionManager.listAll;
+    for (const [args, expected] of [
+      ["", `1 session(s) and 1 note(s) from ${tempRoot} will`],
+      ["--all", `2 session(s) and 2 note(s) from ${tempRoot} and its sub-folders will`],
+      ["1 --all", `1 session(s) and 2 note(s) from ${tempRoot} and its sub-folders will`],
+    ] as const) {
+      let confirmation = "";
+      await commands.get("dream")!.handler(args, {
+        cwd: tempRoot, hasUI: true,
+        modelRegistry: { find: () => ({ api: "test" }) },
+        ui: { confirm: async (_title: string, text: string) => { confirmation = text; return false; } },
+      } as unknown as ExtensionContext);
+      assert.ok(confirmation.startsWith(expected), confirmation);
+    }
+  } finally {
+    SessionManager.list = originalList;
+    SessionManager.listAll = originalListAll;
+    rmSync(join(dreamHome, "inbox", `${subNote.id}.json`));
   }
 
   const roleHome = join(tempRoot, "role-home");
@@ -1408,6 +1467,10 @@ try {
   );
   assert.match(pathPrompt, /### memory likec4\.md \(1 session\(s\)\)\n- f1 \[fact\] \(session s1, subject likec4 validate\) Run validate\./);
   assert.match(pathPrompt, /A scope line must name that folder or a parent folder, for example "scope: ~\/projects"/);
+  for (const prompt of [pathPrompt, runnerTest.extractPrompt("## entry user-1 | user\nUse short replies.\n")]) {
+    assert.match(prompt, /Memory is for knowledge that a future session cannot get from a file or one command\./);
+    assert.match(prompt, /Prefer rules, causes, and procedures to current state/);
+  }
 
   const competing = await Promise.allSettled(["A", "B"].map((name) => workerTest.applyMemoryEdit(editContext, {
     action: "write", path: "global/race.md", expectedHash: "missing",
@@ -1510,7 +1573,11 @@ try {
     assert.match(notifications.at(-1)!, new RegExp(`Project sessions for ${tempRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: 2 accepted, 1 reserved, 1 available, 4 total\\.`));
     assert.match(notifications.at(-1)!, /batch-a: applied/);
     assert.match(notifications.at(-1)!, /empty: ready/);
-    await commands.get("dream-apply")!.handler("empty", commandContext);
+    let emptyConfirmation = "";
+    await commands.get("dream-apply")!.handler("empty", {
+      ...commandContext, ui: { ...commandContext.ui, confirm: async (_title: string, text: string) => { emptyConfirmation = text; return true; } },
+    });
+    assert.match(emptyConfirmation, /This job changes no memory file\. Apply still marks 1 session\(s\) as processed and deletes 0 note\(s\) from the inbox\./);
     assert.equal(git(concurrentMemory, "rev-parse", "HEAD"), emptyCommit);
     assert.ok(dreamTest.loadProcessedSessions(join(concurrentHome, "state.json")).includes("empty"));
     assert.throws(() => git(concurrentMemory, "rev-parse", "--verify", "refs/heads/dream/empty"));
@@ -1546,9 +1613,11 @@ try {
       assert.throws(() => git(concurrentMemory, "merge-base", "--is-ancestor", originalCommit, correctedCommit));
     }
     const masterBeforeApply = git(concurrentMemory, "rev-parse", "HEAD");
+    let declinedConfirmation = "";
     await commands.get("dream-apply")!.handler(id, {
-      ...commandContext, ui: { ...commandContext.ui, confirm: async () => false },
+      ...commandContext, ui: { ...commandContext.ui, confirm: async (_title: string, text: string) => { declinedConfirmation = text; return false; } },
     });
+    assert.match(declinedConfirmation, /This job changes 1 memory file\(s\)\./);
     assert.equal(git(concurrentMemory, "rev-parse", "HEAD"), masterBeforeApply);
     assert.equal(git(concurrentMemory, "rev-parse", `dream/${id}`), correctedCommit);
     assert.equal(JSON.parse(readFileSync(join(edited.jobDir, "state.json"), "utf8")).publishedCommit, originalCommit);

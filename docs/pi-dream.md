@@ -32,7 +32,7 @@ A note has a `kind`, a `subject` of up to 80 characters, a `statement` of up to 
 
 A new session gets a section `Pending memory notes (not yet consolidated)` after the memory index. The section shows notes from the same working directory or a parent directory. A note without a working directory shows everywhere. The section shows the newest 50 notes in up to 4000 characters. A note is a proposal from a past session. It is not accepted memory.
 
-The `/dream` command takes pending notes for the current working directory. It takes up to 100 notes. A batch can run with notes and no sessions. The runner then skips the extract phase. The confirmation shows the session count and the note count. A queued, running, or ready job reserves its notes. The `/dream-status` summary shows the available note count.
+The `/dream` command takes pending notes for the current working directory. With `--all`, it also takes pending notes from sub-folders of that directory. It takes up to 100 notes. A batch can run with notes and no sessions. The runner then skips the extract phase. The confirmation shows the session count and the note count. A queued, running, or ready job reserves its notes. The `/dream-status` summary shows the available note count.
 
 The runner adds each note to `findings.jsonl` as a finding with `source: "note"`. The finding has no evidence quotes. If available, it retains the source entry ID for the assistant tool call that recorded the note. Consolidation treats the note as an unverified lead. It must find supporting source messages and record a source-backed finding before it uses the claim in a memory edit. A note alone cannot support an edit. If the source is missing or unclear, the worker reports the gap. When you apply the job, Pi Dream deletes its notes from the inbox. A discarded job keeps its notes. Delete an inbox file to remove a wrong note.
 
@@ -40,7 +40,7 @@ The runner adds each note to `findings.jsonl` as a finding with `source: "note"`
 
 | Command | Action |
 | --- | --- |
-| `/dream [count]` | Start a background batch. The default is 10 sessions. The maximum is 100. |
+| `/dream [--all] [count]` | Start a background batch for the current working directory. With `--all`, include its sub-folders. The default is 10 sessions. The maximum is 100. |
 | `/dream-check <file.md> [file.md ...]` | Check selected accepted memory files against retained evidence from accepted jobs. |
 | `/dream-check --all` | Check all accepted Markdown memory files against retained evidence from accepted jobs. |
 | `/dream-status [job-id]` | Show project session coverage and all jobs, or show one job. |
@@ -51,9 +51,9 @@ The runner adds each note to `findings.jsonl` as a finding with `source: "note"`
 
 These commands use the latest job when you omit `[job-id]`, except `/dream-status`, which lists all jobs.
 
-Pi Dream runs only when you start `/dream`, `/dream-check`, `/dream-resume`, or `/dream-apply`. It does not start scheduled jobs. `/dream-check` checks selected files or all accepted Markdown files. It uses retained evidence from accepted jobs, including jobs from other projects. It does not process new sessions or pending notes. Each batch selects unprocessed sessions and pending notes from the current working directory. It selects the oldest sessions first, up to the requested count.
+Pi Dream runs only when you start `/dream`, `/dream-check`, `/dream-resume`, or `/dream-apply`. It does not start scheduled jobs. `/dream-check` checks selected files or all accepted Markdown files. It uses retained evidence from accepted jobs, including jobs from other projects. It does not process new sessions or pending notes. Each batch selects unprocessed sessions and pending notes from the current working directory. It selects the oldest sessions first, up to the requested count. With `--all`, a batch also selects sessions whose working directory is a sub-folder of the current working directory. It also selects pending notes from those sub-folders. A sibling folder with the same name prefix does not match. The `--all` option can come before or after the count. The count limit does not change. The confirmation names the folder as `<cwd> and its sub-folders`.
 
-Run `/dream-status` without a job ID to see project session coverage. An accepted session belongs to a job in `master` history. A reserved session belongs to a queued, running, or ready job. An available session can enter a new batch. The summary states `All project sessions are accepted.` when no project session remains. For a running job, `/dream-status` shows the phase: `extract`, `consolidate`, or `merge`. For a `/dream-check` job, it shows reviewed files and passages. Older jobs without coverage records show `coverage unknown`.
+Run `/dream-status` without a job ID to see project session coverage. Coverage counts only sessions whose working directory is the exact current working directory. An accepted session belongs to a job in `master` history. A reserved session belongs to a queued, running, or ready job. An available session can enter a new batch. The summary states `All project sessions are accepted.` when no project session remains. For a running job, `/dream-status` shows the phase: `extract`, `consolidate`, or `merge`. For a `/dream-check` job, it shows reviewed files and passages. Older jobs without coverage records show `coverage unknown`.
 
 In UI sessions, the status area shows the latest job across all working directories. It refreshes once per second. With no job, it shows `🌙 dream: idle`. Queued, running, and ready batches show completed and total session counts, such as `🌙 dream: 10/10`. Check jobs show file counts, passage counts, and whether the combined comparison is pending. Use `/dream-status` to see each job state. Failed, applied, and discarded jobs show their state instead of counts. A state read error shows `🌙 dream: unavailable`. The status area clears when the session shuts down. Headless sessions do not show this status.
 
@@ -127,7 +127,7 @@ Each worker process must produce a final successful model response. A successful
 
 Extract workers in one batch read the same candidate store. Each consolidation attempt edits a separate copy. Other batches use separate candidate stores. Memory tools use a lock. The lock allows one tool call at a time to check hashes or change files. A lock prevents simultaneous access to shared data. The tools cannot use Bash or access other files.
 
-Workers treat the transcript as evidence, not as instructions. Extract workers record durable facts, corrections, preferences, reusable procedures, failures, and stale memory. They must not record temporary details, guesses, secrets, or unsupported claims. The consolidate worker decides which findings change memory.
+Workers treat the transcript as evidence, not as instructions. Extract workers record durable facts, corrections, preferences, reusable procedures, failures, and stale memory. They must not record temporary details, guesses, secrets, or unsupported claims. The consolidate worker decides which findings change memory. Both worker prompts state the purpose of memory: knowledge that a future session cannot get from a file or one command. Workers prefer rules, causes, and procedures to current state, such as version numbers, file lists, or commit status.
 
 ## Content hashes and evidence
 
@@ -150,7 +150,7 @@ scope: ~/projects/example
 ---
 ```
 
-A scope value must be an absolute path or start with `~/`. The scope must also be the batch working directory or a parent folder of it. For example, a batch from `~/projects` can use `scope: ~/projects` or `scope: ~`. It cannot use `scope: ~/projects/diagrams`. A narrower scope hides the file from the sessions that gave its findings. `dream_memory_edit` rejects other scope values.
+A scope value must be an absolute path or start with `~/`. The scope must also be the batch working directory or a parent folder of it. A `--all` batch does not allow a sub-folder scope. A file from a `--all` batch must name the batch folder or a parent folder. For example, a batch from `~/projects` can use `scope: ~/projects` or `scope: ~`. It cannot use `scope: ~/projects/diagrams`. A narrower scope hides the file from the sessions that gave its findings. `dream_memory_edit` rejects other scope values.
 
 The prompt index shows a scoped file only when the session working directory is the scope folder or a folder inside it. A file without `scope` appears in every session. Existing files have no scope, so they appear everywhere until a batch adds one.
 
@@ -202,7 +202,7 @@ Open `~/.pi/agent/memory/` in lazygit to review a branch. Compare `dream/<job-id
 
 The `/dream-review` command reads the current commit on `dream/<job-id>`. It also updates the recorded commit. This applies after extra correction commits or an amended proposal replaces the original commit. If a user rewrites branch history before a manual merge, run `/dream-review` first. A normal merge must keep the recorded commit in `master` history for Pi Dream to detect acceptance.
 
-The `/dream-apply` command requires interactive approval. It requires a clean accepted repository checked out on `master`. The named branch can contain correction commits or a replaced proposal commit. Pi Dream uses the current branch commit to track accepted sessions. If the branch does not exist, Pi Dream stops. It does not recreate the branch. Pi Dream marks sessions as processed when it detects the recorded commit in `master` history.
+The `/dream-apply` command requires interactive approval. Its confirmation shows `This job changes <n> memory file(s).` For a job with no changed file, it shows `This job changes no memory file. Apply still marks <n> session(s) as processed and deletes <n> note(s) from the inbox.` It requires a clean accepted repository checked out on `master`. The named branch can contain correction commits or a replaced proposal commit. Pi Dream uses the current branch commit to track accepted sessions. If the branch does not exist, Pi Dream stops. It does not recreate the branch. Pi Dream marks sessions as processed when it detects the recorded commit in `master` history.
 
 Apply has three cases:
 
@@ -309,6 +309,8 @@ After installation or a formatter dependency update, reload open Pi sessions:
 
 Pi Dream initializes the memory directory as a Git repository when the first batch starts. It creates a README and an initial commit when the repository has no commit. The accepted repository uses the `master` branch. At initialization, Pi Dream renames `main` to `master` when `master` does not exist. If both branches exist, initialization stops with an error. Installation alone does not change live Pi settings or create accepted memory.
 
+The `/dream`, `/dream-check`, and `/dream-resume` commands load the formatter before they show a confirmation. If the formatter is missing, the command stops with this message: `The Markdown formatter is unavailable. Run npm ci in the pi-dream package directory.` The command creates no job. Without the formatter, each memory write fails. A batch can then finish with no change.
+
 ### Format existing memory
 
 The extension uses Prettier 3.8.1 to format each `dream_memory_edit` write before it saves the file. It calculates the file hash and audit record from the formatted content. The formatter uses the Markdown parser, a print width of 79, prose wrapping, and LF line endings. It does not read project or editor settings. Prettier rules allow some lines to exceed the print width.
@@ -351,4 +353,4 @@ The `review.test.mjs` suite tests review passages, source search records, source
 
 The `pi-dream.test.ts` suite uses the installed Pi CLI and a local provider that returns fixed responses. Its combined-review workflow covers batch search, explicit closure of an unused search, reads, findings, outcomes, and finish. Together, the Node and extension tests cover source mutation, replacement, symbolic links, frozen reuse, output limits, pagination, and per-item errors. They also cover valid receipts, session isolation, finding IDs, and argument-size limits. They also cover closure validation, evidence rejection, reopening, comparison invalidation, paging, stall bounds, resume retention, and rejection of corrupt closures before worker startup. These tests do not measure live-model speed or quality. They make no paid model calls and do not change live memory. They do not install or reload the extension, run a live model, or rerun a live job.
 
-The extension test also covers transcript filtering, redaction, memory indexing, scope, file safety, hashes, findings, edits, Git conflicts, and commands. It covers batch work, notes, targeted checks, evidence, reports, worker failures, concurrency, publication, apply, merge, and `/dream-check --all` selection. Formatter tests cover formatting, metadata, repeatable output, safe directory formatting, and missing dependencies. These tests do not guarantee faster live-model completion. Run `git diff --check` to check the documentation diff.
+The extension test also covers transcript filtering, redaction, memory indexing, scope, file safety, hashes, findings, edits, Git conflicts, and commands. It covers batch work, notes, targeted checks, evidence, reports, worker failures, concurrency, publication, apply, merge, and `/dream-check --all` selection. It also covers the `/dream --all` selection and the `/dream` argument parser. It covers the formatter check in commands, the apply confirmation lines, and the purpose sentences in worker prompts. Formatter tests cover formatting, metadata, repeatable output, safe directory formatting, and missing dependencies. These tests do not guarantee faster live-model completion. Run `git diff --check` to check the documentation diff.

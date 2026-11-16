@@ -1,15 +1,20 @@
 import {
-  mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { frontMatter, memoryFiles, withLock } from "./store.mjs";
 
-export async function formatMarkdown(content) {
-  const metadata = frontMatter(content);
-  const { format } = await import("prettier").catch((error) => {
+// Commands call this before they start a job. Without the formatter, each memory write fails.
+export function loadFormatter() {
+  return import("prettier").catch((error) => {
     throw new Error("The Markdown formatter is unavailable. Run npm ci in the pi-dream package directory.", { cause: error });
   });
+}
+
+export async function formatMarkdown(content) {
+  const metadata = frontMatter(content);
+  const { format } = await loadFormatter();
   const formatted = await format(content, {
     parser: "markdown",
     printWidth: 79,
@@ -63,7 +68,9 @@ export async function formatMemoryDirectory(root) {
   });
 }
 
-const isMain = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+// Node gives the real path in import.meta.url. A path through a symlink, such as macOS $TMPDIR, must match it.
+const isMain = process.argv[1] && existsSync(process.argv[1]) &&
+  fileURLToPath(import.meta.url) === realpathSync(process.argv[1]);
 if (isMain) {
   if (process.argv.length !== 3) {
     process.stderr.write("Usage: node format-memory.mjs <memory-directory>\n");
