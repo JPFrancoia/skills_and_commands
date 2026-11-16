@@ -33,8 +33,8 @@ Include all eight sections:
 
 ## 2. Review the plan
 
-Offer the `grill` skill to challenge the plan against project documentation, terms, and existing decisions.
-If the user accepts, update the plan with the results.
+If the user requests a plan review, use the `grill` skill.
+Record the review results before implementation.
 
 Before implementation, check that all these conditions hold:
 
@@ -44,7 +44,7 @@ Before implementation, check that all these conditions hold:
 - Every changed behavior has a check with an expected result.
 - Every unresolved question has a safe assumption or an explicit reason to block implementation.
 
-## 3. Present the plan for approval
+## 3. Present the plan and continue
 
 Present the plan path and a concise summary:
 
@@ -54,8 +54,10 @@ Present the plan path and a concise summary:
 - The validation approach.
 - Open questions and assumptions.
 
-Follow the approval rules in the global `AGENTS.md`.
-After approval, pause only for a security risk, possible data loss, or a decision that needs the user.
+Follow the approval rules in the global `AGENTS.md` and any explicit project boundaries.
+The plan records the work. It does not create an additional approval requirement.
+When the request authorizes implementation, continue after presenting the plan.
+When the request is planning-only, stop after presenting the plan.
 
 ## 4. Maintain the plan
 
