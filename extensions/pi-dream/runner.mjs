@@ -53,6 +53,12 @@ function displayPath(path) {
   return path === home ? "~" : path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 }
 
+// States the purpose of memory, so that workers skip state that a session can look up.
+const MEMORY_PURPOSE = [
+  "Memory is for knowledge that a future session cannot get from a file or one command.",
+  "Prefer rules, causes, and procedures to current state, such as version numbers, file lists, or commit status.",
+];
+
 function extractPrompt(transcript) {
   return [
     "You extract durable findings from one Pi session transcript.",
@@ -63,6 +69,7 @@ function extractPrompt(transcript) {
     "Batch results keep input indices. Retry only failed or deferred inputs. Successful findings and evidence reads remain saved.",
     "Distinguish user statements, observed tool results, and assistant conclusions. A tool call does not prove success.",
     "Read related memory files first. Then name the related memoryPath, and skip facts that memory already states correctly.",
+    ...MEMORY_PURPOSE,
     "Record one finding for each of these items:",
     "- fact: a durable fact about a project, system, or tool.",
     "- preference: a stable user preference.",
@@ -194,6 +201,7 @@ export function consolidatePrompt(manifest, findings) {
     "Prefer dream_source_batch and dream_finding_batch for independent work. Single-operation tools remain available.",
     "Check source context when claims conflict. Distinguish user statements, tool observations, and assistant conclusions.",
     "An exact quote proves what a message says, not that its claim is true. Prefer observed results over unsupported conclusions.",
+    ...MEMORY_PURPOSE,
     "Do this work in this order:",
     "1. Fix memory that a correction or stale finding contradicts.",
     "2. Add durable facts that memory does not contain. Update an existing file on the same subject when one exists.",
@@ -880,7 +888,7 @@ async function mergeBranch(manifest, options) {
   throw new Error("master moved three times during merge. Run /dream-apply again.");
 }
 
-export const __test__ = { workerArgs, consolidatePrompt, groupFindings, mergePrompt, rejectConflictMarkers, runPool, runWorkerProcess, validatePartialAttempt };
+export const __test__ = { workerArgs, consolidatePrompt, extractPrompt, groupFindings, mergePrompt, rejectConflictMarkers, runPool, runWorkerProcess, validatePartialAttempt };
 
 export async function runJob(manifestPath, options = {}) {
   const manifest = readJson(manifestPath);

@@ -30,6 +30,7 @@ import {
 } from "./store.mjs";
 
 import { buildSource, contentText, redactTranscript, sourcesHash, loadSources, parseTranscript } from "./sources.mjs";
+import { loadFormatter } from "./format-memory.mjs";
 export { redactTranscript } from "./sources.mjs";
 
 const DEFAULT_BATCH = 10;
@@ -135,6 +136,12 @@ export function parseBatchCount(raw: string, fallback: number, maximum: number):
   if (!raw.trim()) return fallback;
   if (!/^\d+$/.test(raw.trim())) throw new Error("The session count must be a number.");
   return Math.min(Math.max(Number(raw.trim()), 1), maximum);
+}
+
+export function parseDreamArgs(raw: string): { all: boolean; count: number } {
+  const tokens = raw.trim().split(/\s+/).filter(Boolean);
+  const rest = tokens.filter((token) => token !== "--all");
+  return { all: rest.length < tokens.length, count: parseBatchCount(rest.join(" "), DEFAULT_BATCH, MAX_BATCH) };
 }
 
 const TOOL_ARGUMENT_LIMIT = 500;
@@ -417,6 +424,7 @@ async function startCheck(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
   if (!tokens.length || (tokens.includes("--all") && (!all || tokens.length !== 1))) {
     throw new Error("Usage: /dream-check --all or /dream-check <file.md> [file.md ...]");
   }
+  await loadFormatter();
   const root = memoryRoot();
   assertMaster(root);
   const paths = all ? memoryTreeEntries(root).map((entry) => entry.path)
@@ -464,7 +472,8 @@ async function startCheck(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
 }
 
 async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext): Promise<void> {
-  const count = parseBatchCount(args, DEFAULT_BATCH, MAX_BATCH);
+  const { all, count } = parseDreamArgs(args);
+  await loadFormatter();
   const model = selectModel(pi, ctx, "workerModel");
   const orchestratorModel = selectModel(pi, ctx, "orchestratorModel");
   if (!model || !orchestratorModel) {
@@ -476,20 +485,27 @@ async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
     return;
   }
   const home = dreamHome();
-  const listed = (await SessionManager.list(ctx.cwd))
+  // With --all, sessions and notes from sub-folders of the working directory also qualify.
+  const inFolder = (cwd?: string) => !!cwd && scopeMatches(ctx.cwd, cwd);
+  const folder = all ? `${ctx.cwd} and its sub-folders` : ctx.cwd;
+  const listed = (all ? (await SessionManager.listAll()).filter((session) => inFolder(session.cwd))
+    : await SessionManager.list(ctx.cwd))
     .sort((a, b) => a.modified.getTime() - b.modified.getTime());
+  const pendingNotes = () => (all
+    ? (availableNotes(home) as Note[]).filter((note) => scopeMatches(note.cwd, ctx.cwd) || inFolder(note.cwd))
+    : availableNotes(home, ctx.cwd) as Note[]);
   const { proposed, proposedNotes } = await withLock(join(home, ".state-lock"), () => ({
     proposed: availableSessions(home, listed).slice(0, count),
-    proposedNotes: (availableNotes(home, ctx.cwd) as Note[]).slice(0, MAX_NOTES),
+    proposedNotes: pendingNotes().slice(0, MAX_NOTES),
   }));
   if (!proposed.length && !proposedNotes.length) {
-    notify(ctx, "No unprocessed, unreserved sessions or notes exist for this working directory.");
+    notify(ctx, `No unprocessed, unreserved sessions or notes exist for ${folder}.`);
     return;
   }
   const approved = await ctx.ui.confirm(
     "Start Pi Dream?",
     [
-      `${proposed.length} session(s) and ${proposedNotes.length} note(s) from ${ctx.cwd} will go to worker model ${model}.`,
+      `${proposed.length} session(s) and ${proposedNotes.length} note(s) from ${folder} will go to worker model ${model}.`,
       `Findings, source messages from selected sessions and notes, and candidate memory will go to orchestrator model ${orchestratorModel}.`,
       `Up to ${DEFAULT_CONCURRENCY} worker(s) will run at once.`,
     ].join("\n"),
@@ -504,7 +520,7 @@ async function startDream(pi: ExtensionAPI, args: string, ctx: ExtensionContext)
   await withLock(join(home, ".state-lock"), () => {
     const available = new Set(availableSessions(home, proposed).map((session: { id: string }) => session.id));
     const selected = prepared.filter(({ session }: { session: { id: string } }) => available.has(session.id));
-    const availableNoteIds = new Set((availableNotes(home, ctx.cwd) as Note[]).map((note) => note.id));
+    const availableNoteIds = new Set(pendingNotes().map((note) => note.id));
     const notes = proposedNotes.filter((note) => availableNoteIds.has(note.id));
     if (!selected.length && !notes.length) {
       notify(ctx, "Another batch reserved these sessions and notes. No job started.", "warning");
@@ -609,6 +625,7 @@ async function resumeDream(args: string, ctx: ExtensionContext): Promise<void> {
   const dir = selectJob(home, args);
   if (!dir) return notify(ctx, "No Pi Dream job exists.");
   if (!ctx.hasUI) return notify(ctx, "Pi Dream needs an interactive confirmation.", "error");
+  await loadFormatter();
   await withLock(join(home, ".state-lock"), () => {
     reconcileJobs(home);
     assertResumable(home, dir);
@@ -705,6 +722,18 @@ function reviewJob(jobDir: string, ctx: ExtensionContext): void {
   ].join("\n");
   writeFileSync(reviewPath, review, "utf8");
   notify(ctx, `Review branch: ${state.branch}\nRepository: ${manifest.memoryRoot}\nReview file: ${reviewPath}`);
+}
+
+// Read-only. An empty batch still marks its sessions as processed, so the confirmation shows the file count.
+function applySummary(jobDir: string): string[] {
+  try {
+    const manifest = readJob<JobManifest>(jobDir, "manifest.json");
+    const names = git(manifest.memoryRoot, ["diff", "--name-only", `refs/heads/master...${reviewRef(manifest.id)}`]);
+    if (names) return [`This job changes ${names.split("\n").length} memory file(s).`];
+    return [`This job changes no memory file. Apply still marks ${manifest.sessionIds.length} session(s) as processed and deletes ${manifest.noteIds?.length ?? 0} note(s) from the inbox.`];
+  } catch {
+    return [];
+  }
 }
 
 function jobProgress(jobDir: string, state: JobState): string {
@@ -812,7 +841,7 @@ export default function piDream(pi: ExtensionAPI): void {
   });
 
   pi.registerCommand("dream", {
-    description: "Start a reviewed background memory batch",
+    description: "Start a reviewed background memory batch: /dream [--all] [count]",
     handler: (args, ctx) => startDream(pi, args, ctx),
   });
 
@@ -861,7 +890,8 @@ export default function piDream(pi: ExtensionAPI): void {
     handler: async (args, ctx) => {
       const dir = selectJob(dreamHome(), args);
       if (!dir) return notify(ctx, "No Pi Dream job exists.");
-      if (!ctx.hasUI || !(await ctx.ui.confirm("Apply Pi Dream?", `Apply job ${basename(dir)} to accepted memory?`))) return;
+      if (!ctx.hasUI || !(await ctx.ui.confirm("Apply Pi Dream?",
+        [`Apply job ${basename(dir)} to accepted memory?`, ...applySummary(dir)].join("\n")))) return;
       await withLock(join(dreamHome(), ".state-lock"), () => {
         reconcileJobs(dreamHome());
         const state = readJob<JobState>(dir, "state.json");
@@ -914,6 +944,6 @@ export default function piDream(pi: ExtensionAPI): void {
 export const __test__ = {
   applyReviewBranch, buildMemoryIndex, buildNoteIndex, buildTranscript, createCandidateSnapshot,
   initializeMemoryStore, loadProcessedSessions, markSessionsProcessed,
-  parseBatchCount, redactTranscript, availableSessions, reconcileJobs, publishJob,
+  parseBatchCount, parseDreamArgs, redactTranscript, availableSessions, reconcileJobs, publishJob,
   selectJob, selectModel, workerExtensions, clipMiddle, scopeMatches, assertResumable, collectReviewSources, collectNoteSources,
 };
