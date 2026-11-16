@@ -12,3 +12,5 @@
 - [Local Pi resources](local-resources.md) — local extension packages, prompt files, agent scan paths, and extension tests.
 - [Pi session auto-rename](pi-session-auto-rename.md) — local installation, Beans identifier rule, and validation.
 - [Quota footer](../extensions/pi-quotas-usage-status/README.md) — provider quota status, virtual routing, and local installation.
+- [Set up a home repository](setup-home-repo.md) — set up project code and shared context in one Git repository.
+- [Set up a root repository](setup-root-repo.md) — skill invocation, setup choices, boundaries, and fixture scenarios.
