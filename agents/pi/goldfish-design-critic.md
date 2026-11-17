@@ -2,7 +2,7 @@
 name: goldfish-design-critic
 description: Challenges document claims, architecture choices, alternatives, failure handling, and conflicts with accepted decisions.
 tools: read, grep, find, ls
-model: openai-codex/gpt-6.1-sol
+model: openai-codex/gpt-6.2-sol
 thinking: medium
 excludeTools: contact_supervisor
 systemPromptMode: replace

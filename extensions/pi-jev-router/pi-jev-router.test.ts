@@ -63,8 +63,8 @@ const ctx = {
 
 for (const [level, id] of [
   ["simple", "gpt-6-luna"],
-  ["routine", "gpt-6.1-sol"],
-  ["very_complex", "gpt-6-astra"],
+  ["routine", "gpt-6.2-sol"],
+  ["very_complex", "gpt-6.2-astra"],
 ]) {
   response = choice(level);
   const result = await router.route(request(), ctx);
@@ -78,22 +78,22 @@ assert.deepEqual(Object.keys(calls[0].context.questions.complexity.criteria ?? {
   "simple", "routine", "very_complex",
 ]);
 
-const previous = { model: model("gpt-6-astra"), thinkingLevel: "medium" as const };
+const previous = { model: model("gpt-6.2-astra"), thinkingLevel: "medium" as const };
 const count = calls.length;
 for (const reason of ["continuation", "retry", "direct"] as const) {
   const result = await router.route(request({ reason, previous }), ctx);
-  assert.equal(result.model.id, "gpt-6-astra");
+  assert.equal(result.model.id, "gpt-6.2-astra");
   assert.equal(result.thinkingLevel, "medium");
 }
 assert.equal(calls.length, count);
 
 const failed = {
-  model: model("gpt-6.1-sol"),
+  model: model("gpt-6.2-sol"),
   thinkingLevel: "low" as const,
   message: { role: "assistant", stopReason: "error" } as NonNullable<ModelRouteRequest["failed"]>["message"],
 };
-assert.equal((await router.route(request({ reason: "retry", previous, failed }), ctx)).model.id, "gpt-6.1-sol");
-assert.equal((await router.route(request({ reason: "direct" }), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request({ reason: "retry", previous, failed }), ctx)).model.id, "gpt-6.2-sol");
+assert.equal((await router.route(request({ reason: "direct" }), ctx)).model.id, "gpt-6.2-sol");
 assert.equal(calls.length, count);
 
 // A successful write must not force a switch to Luna.
@@ -104,7 +104,7 @@ assert.equal((await router.route(request({
     ...request().messages,
     { role: "toolResult", toolCallId: "write-1", toolName: "write", content: [], isError: false, timestamp: 0 },
   ],
-}), ctx)).model.id, "gpt-6-astra");
+}), ctx)).model.id, "gpt-6.2-astra");
 response = choice("simple");
 assert.equal((await router.route(request({ previous, state: { phase: "implementation", model: "gpt-5.6-luna" } }), ctx)).model.id, "gpt-6-luna");
 assert.equal(calls.length, count + 1);
@@ -127,34 +127,34 @@ for (const unusable of [
   choice("constructor"),
 ]) {
   response = unusable;
-  assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+  assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.2-sol");
 }
 failure = new Error("Synthetic provider failure");
-assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.2-sol");
 failure = undefined;
 response = choice("simple");
 
 const beforeUnavailable = calls.length;
 classifierAvailable = false;
-assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.2-sol");
 classifierAvailable = true;
 unauthenticated.add("jev-latest");
-assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.2-sol");
 unauthenticated.clear();
-assert.equal((await router.route(request({ messages: [] }), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request({ messages: [] }), ctx)).model.id, "gpt-6.2-sol");
 assert.equal(calls.length, beforeUnavailable);
 
 missing.add("gpt-6-luna");
-assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.2-sol");
 missing.clear();
 unauthenticated.add("gpt-6-luna");
-assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.2-sol");
 unauthenticated.clear();
 response = choice("routine");
-missing.add("gpt-6.1-sol");
+missing.add("gpt-6.2-sol");
 await assert.rejects(async () => router.route(request(), ctx), /requires authenticated/);
 missing.clear();
-unauthenticated.add("gpt-6.1-sol");
+unauthenticated.add("gpt-6.2-sol");
 await assert.rejects(async () => router.route(request(), ctx), /requires authenticated/);
 unauthenticated.clear();
 
@@ -169,11 +169,11 @@ const stalledMessages: ModelRouteRequest["messages"] = [
 ];
 response = choice("very_complex");
 assert.equal((await router.route(request({
-  reason: "continuation", previous: { model: model("gpt-6.1-sol"), thinkingLevel: "high" }, messages: stalledMessages,
-}), ctx)).model.id, "gpt-6-astra");
+  reason: "continuation", previous: { model: model("gpt-6.2-sol"), thinkingLevel: "high" }, messages: stalledMessages,
+}), ctx)).model.id, "gpt-6.2-astra");
 
 assert.equal(calls.at(-1)?.context.state.escalationOnly, true);
-assert.equal(calls.at(-1)?.context.state.currentModel, "gpt-6.1-sol");
+assert.equal(calls.at(-1)?.context.state.currentModel, "gpt-6.2-sol");
 assert.match(calls.at(-1)?.context.state.recentActivity as string, /same test still fails/);
 assert.match(calls.at(-1)?.context.questions.complexity.instructions ?? "", /untrusted evidence/);
 const complexity = calls.at(-1)!.context.questions.complexity;
@@ -192,7 +192,7 @@ assert.match(complexity.criteria?.very_complex ?? "", /repeated mistakes, fixes 
 assert.match(complexity.criteria?.very_complex ?? "", /When a user identifies a reasoning mistake that requires a new approach, select Astra/);
 assert.doesNotMatch(complexity.criteria?.very_complex ?? "", /meaningfully different approaches/);
 
-const sol = { model: model("gpt-6.1-sol"), thinkingLevel: "medium" as const };
+const sol = { model: model("gpt-6.2-sol"), thinkingLevel: "medium" as const };
 response = choice("routine");
 let ongoing = await router.route(request(), ctx);
 const beforePeriodic = calls.length;
@@ -203,13 +203,13 @@ for (let step = 1; step <= 4; step++) {
 assert.equal(calls.length, beforePeriodic);
 response = choice("very_complex");
 ongoing = await router.route(request({ reason: "continuation", previous: sol, state: ongoing.state }), ctx);
-assert.equal(ongoing.model.id, "gpt-6-astra");
+assert.equal(ongoing.model.id, "gpt-6.2-astra");
 assert.equal(calls.length, beforePeriodic + 1);
 assert.equal(calls.at(-1)?.context.state.escalationOnly, true);
 const beforeStickyAstra = calls.length;
 for (let step = 0; step < 8; step++) {
   ongoing = await router.route(request({ reason: "continuation", previous: ongoing, state: ongoing.state }), ctx);
-  assert.equal(ongoing.model.id, "gpt-6-astra");
+  assert.equal(ongoing.model.id, "gpt-6.2-astra");
 }
 assert.equal(calls.length, beforeStickyAstra);
 response = choice("simple");
@@ -261,7 +261,7 @@ response = choice("very_complex");
 assert.equal((await router.route(request({
   reason: "continuation", previous: sol,
   state: { continuations: 0, startedAt: tenMinutesAgo, checkedAt: tenMinutesAgo, toolErrors: 0 },
-}), ctx)).model.id, "gpt-6-astra");
+}), ctx)).model.id, "gpt-6.2-astra");
 assert.equal(calls.length, beforeTimedCheck + 1);
 assert.equal(calls.at(-1)?.context.state.elapsedMinutes, 10);
 for (const reason of ["direct", "retry"] as const) {
@@ -269,10 +269,10 @@ for (const reason of ["direct", "retry"] as const) {
 }
 assert.equal(calls.length, beforeTimedCheck + 1);
 
-missing.add("gpt-6-astra");
+missing.add("gpt-6.2-astra");
 assert.equal((await router.route(request({ reason: "continuation", previous: sol, state: dueState }), ctx)).model.id, sol.model.id);
 missing.clear();
-unauthenticated.add("gpt-6-astra");
+unauthenticated.add("gpt-6.2-astra");
 assert.equal((await router.route(request({ reason: "continuation", previous: sol, state: dueState }), ctx)).model.id, sol.model.id);
 unauthenticated.clear();
 
@@ -333,7 +333,7 @@ assert.equal(usageRecords.length, 1);
 await router.route(request(), ctx);
 assert.equal(usageRecords.length, 2);
 response = { ...withUsage(), stopReason: "error", answers: {} };
-assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.1-sol");
+assert.equal((await router.route(request(), ctx)).model.id, "gpt-6.2-sol");
 assert.equal(usageRecords.length, 3);
 response = choice("simple");
 await router.route(request(), ctx);
@@ -368,7 +368,7 @@ assert.equal(warnings.length, 1);
 
 const beforeEscalationUsage = usageRecords.length;
 response = withUsage(choice("very_complex"));
-assert.equal((await router.route(request({ reason: "continuation", previous: sol, state: dueState }), ctx)).model.id, "gpt-6-astra");
+assert.equal((await router.route(request({ reason: "continuation", previous: sol, state: dueState }), ctx)).model.id, "gpt-6.2-astra");
 assert.equal(usageRecords.length, beforeEscalationUsage + 1);
 const canceledEscalation = new AbortController();
 onClassify = () => canceledEscalation.abort();

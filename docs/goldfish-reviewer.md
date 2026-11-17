@@ -23,7 +23,7 @@ The comprehension reviewer receives only the target path and review scope. It do
 
 ## Context and models
 
-The coordinator uses its configured default model. The four reviewers use `openai-codex/gpt-6.1-sol` with medium thinking.
+The coordinator uses its configured default model. The four reviewers use `openai-codex/gpt-6.2-sol` with medium thinking.
 
 The coordinator requests fresh context for each child and limits agent selection to the four named reviewers. Fresh context means that a reviewer starts without earlier conversation history. This explicit option overrides a global fork preference. Do not use `--fork` when you invoke the coordinator.
 

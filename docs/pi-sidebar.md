@@ -42,7 +42,7 @@ The sidebar uses Pi's active theme, with side padding and compact section divide
 
 - The Conversation section uses compact rows without a surrounding frame.
 - Long titles wrap onto two lines before truncation. Long model and quota lines wrap within the available width.
-- The model row uses the footer format: `(jev) auto • high → gpt-6-astra • high`.
+- The model row uses the footer format: `(jev) auto • high → gpt-6.2-astra • high`.
 - 🧹 compactions, 🔄 turns, and 💰 cost appear directly below the working directory with aligned values.
 - The `ctx` and `quota` bars each have a blank line above them. Extension status values follow the quota details.
 
