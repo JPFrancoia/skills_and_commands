@@ -8,7 +8,7 @@ Add a read-only reviewer for code simplicity and maintainability. It reports con
 
 ## 2. Current state / relevant context
 
-- Pi agent definitions live in `agents/pi/`. The Python reviewer uses `openai-codex/gpt-6.2-sol` with medium thinking.
+- Pi agent definitions live in `agents/pi/`. The Python reviewer uses `openai-codex/gpt-6.1-sol` with medium thinking.
 - The Go reviewer already questions forwarding layers, speculative options, and unnecessary interfaces.
 - Verified user feedback supports removing one-call wrappers and duplicate state, simplifying configuration, and reducing complexity across packages.
 - The same feedback supports a shared helper when it removes real duplication. Helpers are not inherently a problem.
@@ -68,7 +68,7 @@ Use the installed agent loader for focused metadata assertions. Run live smoke c
 ### Validation results
 
 - The installed agent loader passed assertions for the model, medium thinking, tools, fresh context, and read-only role.
-- Two native `subagent` file reviews completed with `openai-codex/gpt-6.2-sol`. Both used only the allowed tools.
+- Two native `subagent` file reviews completed with `openai-codex/gpt-6.1-sol`. Both used only the allowed tools.
 - The layered example produced one concrete finding: remove the forwarding object and duplicate state while preserving key validation.
 - The direct example returned `No worthwhile simplification found.` It retained the required input check.
 - Both examples passed the same contract checks before review. All six source, test, and requirement files remained unchanged afterward.
