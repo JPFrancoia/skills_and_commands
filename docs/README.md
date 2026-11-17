@@ -8,6 +8,7 @@
 - [Pi Dream](pi-dream.md) — Markdown memory, session batches, review, privacy, installation, and validation.
 - [Pi Jev router](pi-jev-router.md) — three-level Codex routing, limits, privacy, installation, and validation.
 - [Clarity reviewer](clarity-reviewer.md) — read-only code reviews for concrete simplifications.
+- [Goldfish reviewer](goldfish-reviewer.md) — parallel reviews of a saved document, with context, tool, and delegation limits.
 - [MCP status indicator](pi-mcp-status.md) — footer count, local refresh, limitations, installation, and validation.
 - [Local Pi resources](local-resources.md) — local extension packages, prompt files, agent scan paths, and extension tests.
 - [Pi session auto-rename](pi-session-auto-rename.md) — local installation, Beans identifier rule, and validation.
