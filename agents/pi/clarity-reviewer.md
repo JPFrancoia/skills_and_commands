@@ -2,7 +2,7 @@
 name: clarity-reviewer
 description: Reviews code for concrete simplifications that improve readability and maintainability without changing required behavior.
 tools: read, bash
-model: openai-codex/gpt-6.2-sol
+model: openai-codex/gpt-6.1-sol
 thinking: medium
 systemPromptMode: replace
 inheritProjectContext: false

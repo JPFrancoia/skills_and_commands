@@ -2,7 +2,7 @@
 name: goldfish-zoom-out
 description: Checks whether a proposal solves the root problem with the smallest complete change and existing code.
 tools: read, grep, find, ls
-model: openai-codex/gpt-6.2-sol
+model: openai-codex/gpt-6.1-sol
 thinking: medium
 excludeTools: contact_supervisor
 systemPromptMode: replace

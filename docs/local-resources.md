@@ -36,14 +36,6 @@ After updating the extension, reload each open Pi session:
 /reload
 ```
 
-## Local sensitive-guard fork
-
-The `extensions/pi-sensitive-guard` directory is an independent Git repository. Its fork is [JPFrancoia/pi-sensitive-guard](https://github.com/JPFrancoia/pi-sensitive-guard), from upstream `MasuRii/pi-sensitive-guard`.
-
-The local patch allows the exact `PWD` environment variable. It excludes recognized `rg` and `grep` patterns and known metadata options from path checks. It still checks protected file operands and pattern files. Unknown options keep conservative path checks.
-
-The installed npm package is unchanged. This local patch is not active.
-
 ## Message timestamps
 
 The `pi-message-timestamps` extension keeps timestamps for user messages. Assistant timestamps follow visible rendered content, with a blank line above and below each timestamp. Hidden activity has no timestamp. Old orphan assistant timestamp entries stay in session history, but the extension hides them. The extension does not depend on minimalist settings.

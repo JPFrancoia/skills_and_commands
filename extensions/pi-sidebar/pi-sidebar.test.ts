@@ -591,7 +591,7 @@ async function main(): Promise<void> {
 	assert.doesNotMatch(plain(), /Codex 7d/);
 	state.ctx.model = { id: "auto", provider: "jev", api: "pi-virtual", reasoning: true };
 	const responses: any[] = [
-		{ role: "assistant", provider: "openai-codex", model: "gpt-6.2-astra", thinkingLevel: "high", stopReason: "stop" },
+		{ role: "assistant", provider: "openai-codex", model: "gpt-6-astra", thinkingLevel: "high", stopReason: "stop" },
 		{ role: "assistant", provider: "openai-codex", model: "failed-model", thinkingLevel: "low", stopReason: "error" },
 		{ role: "assistant", provider: "openai-codex", model: "aborted-model", stopReason: "aborted" },
 		{ role: "toolResult" },
@@ -599,9 +599,9 @@ async function main(): Promise<void> {
 	state.ctx.sessionManager = { buildSessionProjection: () => ({ messages: responses }) };
 	state.ctx.modelRegistry = { find: (provider: string, id: string) => ({ id, provider, api: "responses" }) };
 	state.routedModel = __test__.getRoutedModel(state.ctx);
-	assert.deepEqual(state.routedModel, { id: "gpt-6.2-astra", thinkingLevel: "high" });
-	assert.match(plainLines(render(80)), /\(jev\) auto • high → gpt-6.2-astra • high/);
-	assert.match(plain().replace(/\n/g, " "), /\(jev\) auto • high → gpt-6.2-astra • high/);
+	assert.deepEqual(state.routedModel, { id: "gpt-6-astra", thinkingLevel: "high" });
+	assert.match(plainLines(render(80)), /\(jev\) auto • high → gpt-6-astra • high/);
+	assert.match(plain().replace(/\n/g, " "), /\(jev\) auto • high → gpt-6-astra • high/);
 	const next = { ...responses[0], model: "gpt-6-luna", thinkingLevel: "low" };
 	assert.deepEqual(__test__.getRoutedModel(state.ctx, [...responses, next]), { id: "gpt-6-luna", thinkingLevel: "low" });
 	assert.equal(__test__.getRoutedModel(state.ctx, []), undefined);
@@ -622,7 +622,7 @@ async function main(): Promise<void> {
 	assert.doesNotMatch(plain(), /thinking\s+off/);
 	state.thinkingLevel = "high";
 	state.ctx.model = { id: "auto", provider: "jev", api: "pi-virtual", reasoning: true };
-	state.routedModel = { id: "gpt-6.2-astra", thinkingLevel: "high" };
+	state.routedModel = { id: "gpt-6-astra", thinkingLevel: "high" };
 	state.gitRepos = [{ path: "/repo", label: "repo", branch: "main", files: [] }, {
 		path: "/outside/repo",
 		label: "outside/repo",

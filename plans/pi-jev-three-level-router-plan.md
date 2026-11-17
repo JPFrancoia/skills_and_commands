@@ -22,8 +22,8 @@ Register `jev/auto` through Pi's native `registerVirtualModel()` API. Use native
 
 | Level | Physical model |
 | --- | --- |
-| Very complex | `openai-codex/gpt-6.2-astra` |
-| Routine | `openai-codex/gpt-6.2-sol` |
+| Very complex | `openai-codex/gpt-6-astra` |
+| Routine | `openai-codex/gpt-6.1-sol` |
 | Simple | `openai-codex/gpt-6-luna` |
 
 Classify each new user prompt. Keep the previous physical model during tool continuations. Keep the failed model during retries. Do not force a downgrade after an edit. Use the previous model for direct requests such as compaction, or routine Sol when none exists. Preserve the selected reasoning level.
@@ -104,7 +104,7 @@ New sessions use `jev/auto` by default. In existing sessions, run `/reload`. Sel
 
 ## 8. Open questions / assumptions
 
-- `astra-6` means `openai-codex/gpt-6.2-astra`; `luna 6` means `openai-codex/gpt-6-luna`.
+- `astra-6` means `openai-codex/gpt-6-astra`; `luna 6` means `openai-codex/gpt-6-luna`.
 - The existing high reasoning default applies to every selected coding model.
 - The user approved per-prompt selection and sticky tool continuations.
 - No further scope approval is needed. Stop if implementation requires unrelated systems or changes to installed Pi code.
