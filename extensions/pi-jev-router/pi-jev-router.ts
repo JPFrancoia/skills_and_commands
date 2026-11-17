@@ -57,7 +57,7 @@ export default function jevRouter(pi: ExtensionAPI): void {
     provider: "jev",
     id: "auto",
     name: "Auto (Jev: Luna / Sol / Astra)",
-    thinkingLevels: ["low", "medium", "high", "xhigh"],
+    thinkingLevels: ["low", "medium", "high", "xhigh", "max"],
     contextWindow: 272_000,
     maxTokens: 128_000,
     async route(request, ctx) {
