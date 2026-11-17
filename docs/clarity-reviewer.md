@@ -4,7 +4,7 @@ The clarity reviewer finds code changes that make software easier to read and ma
 
 ## Review behavior
 
-The reviewer uses `openai-codex/gpt-6.1-sol` with medium thinking. Each review starts with fresh context and uses only the `read` and `bash` tools.
+The reviewer uses `openai-codex/gpt-6.2-sol` with medium thinking. Each review starts with fresh context and uses only the `read` and `bash` tools.
 
 Give it one review target:
 

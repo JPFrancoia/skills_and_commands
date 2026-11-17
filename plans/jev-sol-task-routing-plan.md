@@ -32,7 +32,7 @@ Jev can still misclassify a prompt. Strong criteria reduce this risk but cannot 
 
 ## 6. Validation / testing
 
-Success means routine coding maps to `gpt-5.6-sol`, routine non-coding maps to `gpt-6.1-sol`, and unusable classification still maps to Sol 5.6. A reassessment must move coding work off Sol 6.1. Run the adjacent extension test, `git diff --check`, and `pre-commit run --all-files`.
+Success means routine coding maps to `gpt-5.6-sol`, routine non-coding maps to `gpt-6.2-sol`, and unusable classification still maps to Sol 5.6. A reassessment must move coding work off Sol 6.1. Run the adjacent extension test, `git diff --check`, and `pre-commit run --all-files`.
 
 ## 7. Step-by-step execution checklist
 

@@ -2,7 +2,7 @@
 name: goldfish-comprehension
 description: Explains a document without earlier conversation context and finds missing explanations or unstated assumptions.
 tools: read, grep, find, ls
-model: openai-codex/gpt-6.1-sol
+model: openai-codex/gpt-6.2-sol
 thinking: medium
 excludeTools: contact_supervisor
 systemPromptMode: replace
