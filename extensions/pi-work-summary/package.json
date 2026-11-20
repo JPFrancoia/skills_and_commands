@@ -1,0 +1,12 @@
+{
+  "name": "pi-work-summary",
+  "version": "1.0.0",
+  "description": "Tool groups with elapsed time and plain-language work summaries",
+  "type": "module",
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

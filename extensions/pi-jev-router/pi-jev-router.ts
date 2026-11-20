@@ -10,7 +10,7 @@ import type {
 const MODELS = {
   simple: "gpt-6-luna",
   routine: "gpt-6.1-sol",
-  very_complex: "gpt-6-astra",
+  very_complex: "gpt-6.2-astra",
 } as const;
 
 interface RoutingState {
