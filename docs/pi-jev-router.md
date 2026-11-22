@@ -5,8 +5,9 @@
 | Jev result | Model |
 | --- | --- |
 | `simple` | `openai-codex/gpt-6-luna` |
+| `bounded` | `openai-codex/gpt-6.1-terra` |
 | `routine` | `openai-codex/gpt-6.1-sol` |
-| `very_complex` | `openai-codex/gpt-6-astra` |
+| `very_complex` | `openai-codex/gpt-6.2-astra` |
 
 ## Routing behavior
 
@@ -14,15 +15,9 @@ The router sends the latest user prompt and recent activity to TypeSafe. It send
 
 For context, the router sends up to 12 recent user, assistant, and tool-result messages. It sends the last 1,000 text characters from each message, with a total limit of 12,000 characters. It excludes system messages, thinking, images, tool arguments, and tool details. It does not redact other text.
 
-The router normally keeps the selected model during tool continuations. It reassesses the work after any of these thresholds:
+The router reassesses the work before every continuation. A continuation is a model request after a tool result. A tool error reaches the next check, but does not force an upgrade. Checks happen before a model request, not during a running tool. New user requests also trigger classification.
 
-- Five continuations since the last check.
-- Three new flagged tool errors since the last check.
-- Ten minutes since the last check.
-
-These thresholds trigger a check, not a forced upgrade. Checks happen before a model request, not during a running tool. New user requests always trigger classification.
-
-The classifier prefers the routine level when the required capability is unclear. It uses Sol 6.1 for all medium-complexity work.
+The classifier selects Terra for clear work that needs some reasoning but little uncertainty. It selects Sol when the cause, requirements, or approach are unclear. It selects Luna for simple work.
 
 Jev favors Astra for four code quality problems:
 
@@ -31,13 +26,15 @@ Jev favors Astra for four code quality problems:
 - Unnecessary complexity requires a simpler design.
 - The user identifies a reasoning mistake that requires a new approach.
 
-The substance of review feedback matters, not harsh wording alone. These problems do not require several failed approaches. Minor corrections, isolated test failures, and normal debugging stay on Sol.
+The substance of review feedback matters, not harsh wording alone. These problems do not require several failed approaches. Minor corrections and isolated test failures use Terra or Sol according to the reasoning needed. Diagnosis with an unclear cause uses Sol.
 
 Astra also handles work that clearly needs stronger reasoning than routine tasks. Persistent failure can also justify Astra when stronger reasoning is needed.
 
 Productive long work, external waiting, or missing credentials alone do not justify Astra. Elapsed time is supporting context, not a deadline. This guidance does not guarantee that Jev selects Astra in a live run.
 
-During a continuation, the router changes to Astra when the classifier selects Astra. Otherwise, it keeps the current model and thinking level. It also keeps them when classification fails or returns an unusable result. Astra stays selected for the rest of the run. A new user request triggers classification for all levels.
+During a continuation, Jev can select a lower level only when the current model is Astra. Luna, Terra, and Sol accept upgrades only. Jev keeps the current model and thinking level when it selects the same level or classification fails. A new user request can select any level, including a lower one.
+
+The classifier receives an `allowDowngrade` flag. It is true only for Astra continuations. Jev asks the classifier to judge the remaining next step, exclude resolved problems, and select the least expensive capable model. Serious unresolved quality problems can still require Astra.
 
 API retries keep the failed model. They do not trigger escalation checks.
 
@@ -61,7 +58,9 @@ Jev models have a zero price in the installed catalog. Token reports are not exa
 
 ## Limits and privacy
 
-Jev can select an incorrect complexity level. Bounded recent activity can omit earlier task context. A model switch loses prompt-cache benefits and can trigger normal Pi compaction.
+Jev can select an incorrect complexity level. The limits on recent activity can omit earlier task context. Each classification adds provider delay. Model switches can reduce prompt-cache reuse and can trigger normal Pi compaction.
+
+Prompt caching can reduce input-token cost. Different models can use different cache behavior, so a model switch can reduce cache reuse. Codex credit billing has no separate cache-write charge, but cached input has a price. Direct API prices differ. See [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching), [Codex pricing](https://developers.openai.com/codex/pricing/), and [prompt caching improvements](https://openai.com/index/better-prompt-caching-for-gpt-6/). The last source describes reasoning-effort changes on supported models, not guaranteed reuse across models.
 
 The router sends bounded user, assistant, and tool-result text to TypeSafe. This text can contain private data from tool output. If TypeSafe must not receive this text, do not use this router.
 
