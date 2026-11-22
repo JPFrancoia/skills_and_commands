@@ -1,0 +1,14 @@
+{
+  "name": "pi-autonomous",
+  "private": true,
+  "type": "module",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./pi-autonomous.ts"
+    ]
+  }
+}
